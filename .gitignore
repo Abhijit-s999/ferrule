@@ -1,0 +1,14 @@
+# The question bank is College Board's copyrighted content and is NEVER
+# committed. Every user fetches their own local copy. See README > Licensing.
+*.db
+*.db-wal
+*.db-shm
+data/
+questions/
+*.questions.json
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
