@@ -360,6 +360,13 @@ def serve(host="127.0.0.1", port=8733, db_path=None):
     if count == 0:
         print("No questions stored yet. Run:  ./satprep.py fetch\n")
 
+    # Whatever takes this process down must take the model server with it,
+    # otherwise an orphaned llama-server sits on the GPU indefinitely.
+    runtime.install_exit_handlers()
+    reaped = runtime.reap_stale_server()
+    if reaped:
+        print(f"stopped an orphaned model server from a previous run (pid {reaped})")
+
     httpd = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host == "127.0.0.1" else host
     print(f"satprep running at http://{shown}:{port}   ({count} questions loaded)")

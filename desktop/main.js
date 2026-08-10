@@ -182,16 +182,37 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => app.quit());
 
+/* Shut the backend down synchronously.
+ *
+ * The previous version asked the backend over HTTP to stop its model server
+ * and killed it in the callback -- but Electron exits without waiting for that
+ * callback, so both the backend and its llama-server were routinely orphaned,
+ * leaving the model resident on the GPU. SIGTERM is enough: the backend
+ * installs handlers that stop the model server on the way out, and the model
+ * additionally carries PR_SET_PDEATHSIG on Linux. */
+function stopBackend() {
+  if (!backend || backend.exitCode !== null) return;
+  try {
+    backend.kill('SIGTERM');
+  } catch { /* already gone */ }
+
+  // Escalate if it has not exited shortly. Synchronous so it completes before
+  // the event loop stops.
+  const deadline = Date.now() + 4000;
+  while (backend.exitCode === null && Date.now() < deadline) {
+    try { spawnSync('sh', ['-c', 'sleep 0.1']); } catch { break; }
+  }
+  if (backend.exitCode === null) {
+    try { backend.kill('SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
 app.on('before-quit', () => {
   app.isQuitting = true;
-  if (backend && backend.exitCode === null) {
-    // Ask the backend to stop any model server it spawned, then end it.
-    const req = http.request(
-      { host: '127.0.0.1', port, path: '/api/runtime/stop', method: 'POST', timeout: 3000 },
-      () => backend.kill()
-    );
-    req.on('error', () => backend.kill());
-    req.on('timeout', () => { req.destroy(); backend.kill(); });
-    req.end('{}');
-  }
+  stopBackend();
 });
+
+// Covers the cases before-quit does not: a crash, or a signal from the shell.
+process.on('exit', stopBackend);
+process.on('SIGINT', () => { stopBackend(); process.exit(0); });
+process.on('SIGTERM', () => { stopBackend(); process.exit(0); });
