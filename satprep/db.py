@@ -5,6 +5,7 @@ College Board and belong to College Board (see README, "Licensing"). Every user
 runs the fetcher and builds their own copy.
 """
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -15,6 +16,9 @@ DEFAULT_DB = os.path.join(os.path.expanduser("~"), ".local", "share", "satprep",
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS questions (
     external_id    TEXT PRIMARY KEY,
+    -- Which project this question came from; see sources.py for terms and
+    -- attribution. Recorded per row so provenance survives in the data.
+    source         TEXT NOT NULL DEFAULT 'collegeboard',
     question_id    TEXT,
     program        TEXT,
     test           INTEGER NOT NULL,      -- 1 = Reading & Writing, 2 = Math
@@ -99,7 +103,13 @@ def _migrate(conn):
         conn.execute(
             "ALTER TABLE questions ADD COLUMN in_practice_test INTEGER NOT NULL DEFAULT 0"
         )
-        conn.commit()
+    if "source" not in have:
+        # Everything stored before sources existed came from College Board.
+        conn.execute(
+            "ALTER TABLE questions ADD COLUMN source TEXT NOT NULL DEFAULT 'collegeboard'"
+        )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_q_source ON questions(source)")
+    conn.commit()
 
 
 def normalize_skill_names(conn):
@@ -232,10 +242,80 @@ def store_question_content(conn, external_id, payload):
     )
 
 
+DIFFICULTY_CODES = {"easy": "E", "medium": "M", "hard": "H"}
+
+
+def store_opensat_question(conn, item, section):
+    """Store one OpenSAT record, mapped onto the same shape as official ones.
+
+    OpenSAT tags questions by domain only, with no skill breakdown, so the
+    domain doubles as the skill. Stats keep sources separate, so this never
+    silently mixes with skill-level numbers from the official bank.
+    """
+    inner = item.get("question") or {}
+    choices = inner.get("choices") or {}
+    options = [
+        {"letter": letter, "content": content}
+        for letter, content in sorted(choices.items())
+        if content is not None
+    ]
+
+    # OpenSAT's own `id` field is not unique -- across the bank, 2,474 questions
+    # share only 1,200 ids ("random_id_a1" alone repeats 91 times). Keying on it
+    # would silently drop half the questions, so key on the content instead:
+    # stable across re-fetches, and unique per distinct question.
+    fingerprint = hashlib.sha1(
+        "\x1f".join(
+            [
+                section,
+                inner.get("paragraph") or "",
+                inner.get("question") or "",
+                "|".join(f"{o['letter']}={o['content']}" for o in options),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:20]
+    answer = inner.get("correct_answer")
+    answer = [answer] if isinstance(answer, str) else list(answer or [])
+
+    test = 2 if section == "math" else 1
+    test_name = "Math" if test == 2 else "Reading and Writing"
+    domain = (item.get("domain") or "Unspecified").strip()
+
+    conn.execute(
+        """
+        INSERT INTO questions
+            (external_id, source, question_id, program, test, test_name,
+             domain_cd, domain, skill_cd, skill, difficulty, in_practice_test,
+             qtype, stem, stimulus, options, correct_answer, rationale, fetched_at)
+        VALUES (?, 'opensat', ?, 'SAT', ?, ?, NULL, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(external_id) DO UPDATE SET
+            stem = excluded.stem, options = excluded.options,
+            correct_answer = excluded.correct_answer, rationale = excluded.rationale
+        """,
+        (
+            f"opensat:{fingerprint}",
+            str(item.get("id")),
+            test,
+            test_name,
+            domain,
+            domain,  # no skill tags upstream; domain stands in
+            DIFFICULTY_CODES.get(str(item.get("difficulty", "")).lower(), "M"),
+            "mcq" if options else "spr",
+            inner.get("question") or "",
+            inner.get("paragraph") or "",
+            json.dumps(options),
+            json.dumps(answer),
+            inner.get("explanation") or "",
+            now_ms(),
+        ),
+    )
+
+
 def row_to_question(row):
     """Shape a DB row into the dict the frontend consumes (answer withheld)."""
     return {
         "external_id": row["external_id"],
+        "source": row["source"],
         "test": row["test"],
         "test_name": row["test_name"],
         "domain": row["domain"],

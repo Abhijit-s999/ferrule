@@ -1,60 +1,143 @@
 # satprep
 
-Adaptive SAT practice built on College Board's own question bank, with metrics
-broken down by question type so you can see exactly where the points are going.
+Free, adaptive SAT practice built on openly available question banks, with
+analytics broken down by **skill and difficulty**, and an optional AI tutor that
+runs on your own machine.
 
-No accounts, no tracking, no server. Everything runs locally and your practice
-record stays in a SQLite file on your machine.
+No accounts. No tracking. No subscription. Nothing leaves your computer unless
+you explicitly choose a hosted AI provider.
 
+![Education should not cost money](https://img.shields.io/badge/price-%240-brightgreen)
+
+---
+
+## Install
+
+**Desktop app** (recommended — no terminal at all):
+
+```bash
+git clone <this repo> && cd satprep
+npm install && npm start
 ```
-./satprep.py fetch     # download the question bank (once, ~4 min)
-./satprep.py serve     # open http://localhost:8733
+
+On first launch the app offers to download the question bank for you. That is
+the whole setup.
+
+To build a distributable binary:
+
+```bash
+npm run build:linux    # AppImage
+npm run build:win      # NSIS installer
+npm run build:mac      # dmg
 ```
 
-Python 3.9+. **No dependencies** — standard library only, so there is nothing
-to install and no virtualenv to manage.
+**Command line**, if you prefer it:
+
+```bash
+./satprep.py fetch     # download the question bank (~4 min, once)
+./satprep.py serve     # then open http://localhost:8733
+```
+
+Requires Python 3.9+. The backend has **no Python dependencies** — standard
+library only.
 
 ---
 
 ## What it does
 
-**Pulls the official bank.** ~3,250 real SAT questions with full text, answer
-choices, correct answers and College Board's own written rationales. Every
-question is tagged with its domain, its specific skill, and its difficulty.
+### Practice that targets your weaknesses
 
-**Picks what you should actually do next.** Question selection weighs three
-things: how badly you're doing on a skill, how much of the real exam that skill
-represents, and how little it knows about you so far. Early sessions behave
-like a diagnostic; later ones concentrate on what's costing you points.
+Question selection weighs how badly you're doing on a skill, how much of the
+real exam that skill represents, and how little it knows about you so far. Early
+sessions behave like a diagnostic; later ones concentrate on what is actually
+costing you points. Wrong answers return on a spaced-repetition schedule
+compressed for people testing in weeks, not months.
 
-**Brings back what you missed.** Wrong answers re-enter the queue on a
-spaced-repetition schedule, compressed for people testing in weeks rather than
-months.
+### Analytics at the grain that matters
 
-**Reports by question type.** Accuracy and pacing per domain and per skill,
-against the real per-question time budget (71s Reading & Writing, 95s Math).
-A skill you get right but too slowly is a different problem from one you get
-wrong, and the dashboard separates them.
+Everything is tagged by **skill AND difficulty**, so the reporting goes further
+than "you're bad at algebra":
 
-**Protects your practice tests.** See below — this one matters.
+- **Skill × difficulty heatmap** — 29 skills × 3 difficulty bands. A row that is
+  strong on the left and weak on the right is a skill you *have*, but not yet at
+  exam difficulty. That is a different fix from one you are missing everywhere,
+  and the app flags it as a **cliff**.
+- **Accuracy at each difficulty**, per section.
+- **Where your time goes** — a histogram of how long questions actually take,
+  stacked by difficulty, with the real per-question budget marked. Averages hide
+  the tail; a 40-second average with a few four-minute questions is a pacing
+  problem an average will never show you.
+- **Pace against the real budget** — 71s per Reading & Writing question, 95s per
+  Math question.
+- **Work done over time** — daily volume, minutes spent, running total.
+- Cells with too little data are faded rather than shouted, so a single unlucky
+  question never looks like a verdict.
+
+### An AI tutor that sets itself up
+
+Click a model. satprep downloads the inference engine and the model, starts the
+server, and wires it up. **No Ollama, no LM Studio, no terminal, no GGUF
+knowledge, no accounts.**
+
+- The engine is a prebuilt [llama.cpp](https://github.com/ggml-org/llama.cpp)
+  release binary, chosen for your platform. On Linux and Windows it prefers the
+  Vulkan build, which gives GPU acceleration on NVIDIA, AMD and Intel alike with
+  no CUDA download; macOS uses the native build with Metal.
+- Your GPU is detected and each model is labelled **fits / tight / needs more
+  VRAM** before you download anything.
+- Every model lists honest pros *and* cons. The small ones say plainly that they
+  get maths wrong.
+- Downloads resume, so a dropped connection does not cost you 5 GB.
+- The tutor gets the question, your answer, and the official rationale as ground
+  truth, and is told to explain the *method* rather than restate the answer.
+
+Already have Ollama, LM Studio, llama.cpp, or a hosted API? Point satprep at it
+in Settings instead. Any OpenAI-compatible endpoint works, plus Anthropic's API
+natively. API keys are stored in `~/.config/satprep/config.json` with
+owner-only permissions — never in the database, never in the repo.
+
+**The tutor is entirely optional.** Everything else works without it.
+
+---
+
+## Question sources
+
+satprep collates free resources; it wrote none of the questions. Full detail and
+terms are in **[ATTRIBUTION.md](ATTRIBUTION.md)**.
+
+| Source | Questions | Default | Notes |
+| --- | --- | --- | --- |
+| [College Board SAT Suite Question Bank](https://satsuiteeducatorquestionbank.collegeboard.org/) | ~3,250 | **on** | Official. Domain + skill + difficulty tags, official rationales. |
+| [OpenSAT](https://github.com/Anas099X/OpenSAT) | ~2,340 | off | Community-written. Licence explicitly permits database use. |
+| [OnePrep](https://www.oneprep.com/) | — | — | Linked and credited. **Deliberately not fetched** — see below. |
+
+**satprep never redistributes question content.** This repository contains no
+questions. Everything is fetched at run time into a local database that
+`.gitignore` keeps out of version control. If you fork this, keep that rule.
+
+OpenSAT is **off by default** on purpose: those questions are not calibrated to
+real exam difficulty and carry only domain tags, so they cannot feed skill-level
+metrics. Turn them on for extra volume — accuracy is always reported per source,
+so the official numbers stay clean either way.
+
+**OnePrep is not scraped.** Its `robots.txt` disallows automated access to its
+question API, separately disallows the `ClaudeBot` and `anthropic-ai` agents,
+and asserts `Content-Signal: ai-train=no`. It's a genuinely good free question
+bank — go use it directly, at their site, where they get the credit.
 
 ---
 
 ## Your Bluebook practice tests stay honest
 
-2,019 of the questions in the bank also appear in College Board's official
-full-length practice tests. College Board's own question-bank UI exposes these
-via a filter it describes as removing *"questions that are also included in
-official full-length practice tests."*
+2,019 questions in the official bank also appear in College Board's full-length
+practice tests. College Board's own tooling exposes these behind a filter it
+describes as removing *"questions that are also included in official full-length
+practice tests."*
 
-If you drill those questions here, your subsequent Bluebook practice test
-scores become a memory check rather than a measurement — and you lose your only
-realistic gauge of where you stand.
-
-**So satprep holds them back by default.** You practise on the remaining ~1,233
-questions and your full-length practice tests stay clean. If you have already
-taken every practice test and want the full bank, pass
-`allow_practice_test=True` to `select_questions()`.
+Drill those here and your Bluebook scores become a memory check instead of a
+measurement — and that is your only realistic gauge of where you stand. **So
+satprep holds them back by default**, leaving ~1,233 official questions to
+practise on, which is far more than anyone gets through in a few weeks.
 
 ---
 
@@ -62,62 +145,44 @@ taken every practice test and want the full bank, pass
 
 | Command | What it does |
 | --- | --- |
-| `./satprep.py fetch` | Download the bank. Resumable; re-running only fetches what's missing. |
-| `./satprep.py serve` | Run the app. `--host 0.0.0.0` to practise from your phone on the same network. |
+| `./satprep.py fetch` | Download the bank. Resumable. `--with-opensat` adds the community set. |
+| `./satprep.py serve` | Run the backend. `--host 0.0.0.0` to practise from your phone. |
 | `./satprep.py stats` | Per-skill breakdown in the terminal. |
 | `./satprep.py plan --minutes 45` | A concrete "do this now" list. |
+| `./satprep.py sources` | List sources and their terms; `--enable` / `--disable`. |
+| `./satprep.py reset` | Clear your practice record, keep the questions. |
 
-`--db PATH` (or `SATPREP_DB`) puts the database somewhere other than
-`~/.local/share/satprep/satprep.db`.
+`--db PATH` or `SATPREP_DB` relocates the database from
+`~/.local/share/satprep/satprep.db`. `fetch --insecure` skips TLS verification
+on networks that intercept it.
 
-If you're on a network that intercepts TLS, `fetch --insecure` skips
-certificate verification.
-
----
-
-## Keyboard
-
-`A`–`D` or `1`–`4` answers. `Enter` submits a grid-in, then moves to the next
-question. Practising with the keyboard is closer to how Bluebook feels than
-clicking through.
+Keyboard: `A`–`D` or `1`–`4` to answer, `Enter` to submit a grid-in and to move
+on.
 
 ---
 
 ## Honest limitations
 
-**The score estimate is rough and reads high.** The real SAT is timed,
-proctored, and *adaptive* — the difficulty of your second module depends on how
-you did in the first, and the hardest points come from items you'd only see
-after a strong first module. Practising at your own pace on a self-selected mix
-does not reproduce any of that. Treat the number as a direction of travel. The
-only trustworthy score estimate is a full-length Bluebook practice test, which
-is exactly why this tool goes out of its way not to spoil them.
+**The score estimate reads high.** The real SAT is timed, proctored and
+*adaptive* — the second module's difficulty depends on the first. Self-paced
+practice on a self-selected mix reproduces none of that. The number is a
+direction of travel. It is computed from official questions only, and ignores
+community questions entirely, because they are not calibrated.
 
-**This is question-level practice, not test simulation.** It builds accuracy
-and speed on specific skills. It does not train stamina, module pacing, or
-managing a two-hour sitting. Use Bluebook for those.
+**This is question-level practice, not test simulation.** It builds accuracy and
+speed per skill. It does not train stamina or module pacing. Use Bluebook for
+those — which is exactly why this app protects them.
 
-**Some skills are thin.** After reserving practice-test questions, a few rare
-skills (Cross-Text Connections, Evaluating statistical claims) have only a
-handful of questions left. The scheduler will exhaust them and move on.
+**Small models get maths wrong.** A 3B model will confidently misapply an
+algebraic step. The app says so on every model card. Prefer the 7B default, and
+treat the official rationale — not the tutor — as the source of truth.
 
----
+**The heatmap is sparse at first.** 29 skills × 3 difficulties is 87 cells; a
+hundred questions fills about one each. Low-confidence cells are faded on
+purpose.
 
-## Licensing
-
-**The code** is MIT. Do what you like with it.
-
-**The questions are not ours to give.** They belong to College Board. This
-repository contains no question content whatsoever, and `.gitignore` is set up
-to keep it that way — the database and any exported question files are
-excluded. `fetch` downloads them from College Board's public question bank into
-your own local database at run time.
-
-If you fork this, **do not commit a populated database or a question dump.**
-That is the one thing that would turn a study tool into a copyright problem.
-
-SAT and College Board are trademarks registered by College Board, which does
-not endorse and is not affiliated with this project.
+**No automated tests yet.** Everything here was verified by running it, but a
+test suite is the first thing this needs before others depend on it.
 
 ---
 
@@ -125,22 +190,34 @@ not endorse and is not affiliated with this project.
 
 ```
 satprep.py            CLI entry point
+desktop/main.js       Electron shell: spawns the backend, opens the window
 satprep/
-  fetch.py            two-pass downloader (index tags, then content)
-  db.py               SQLite schema, migrations, skill-name normalisation
-  scheduler.py        weakness-weighted selection + spaced repetition + grading
-  stats.py            per-type analytics, pacing, study plan, score estimate
+  fetch.py            multi-source downloader
+  sources.py          every source's terms and attribution, in one place
+  db.py               SQLite schema, migrations, provenance, de-duplication
+  scheduler.py        weakness-weighted selection, spaced repetition, grading
+  stats.py            skill x difficulty analytics, pacing, score estimate
+  runtime.py          downloads and manages the local model engine
+  tutor.py            provider abstraction, prompting, streaming
   server.py           stdlib HTTP server and JSON API
-  static/             the frontend (vanilla JS, no build step)
+  static/             frontend: vanilla JS, inline-SVG charts, no build step
 ```
 
-The upstream bank ships some skills under two spellings (`Cross-Text
-Connections` and `Cross-text Connections`). `db.normalize_skill_names` merges
-casing variants on fetch, because otherwise one skill becomes two rows in every
-report and two independent accuracy estimates.
+Two data-quality fixes worth knowing about, because both would silently corrupt
+the metrics:
 
-Math renders as MathML, which every current browser handles natively — no
-KaTeX, no MathJax, no build step.
+- The official bank ships some skills under two spellings (`Cross-Text
+  Connections` and `Cross-text Connections`). Left alone, one skill becomes two
+  rows and two independent accuracy estimates. `db.normalize_skill_names` merges
+  casing variants on fetch.
+- OpenSAT's `id` field is **not unique** — 2,474 questions share 1,200 ids
+  (`random_id_a1` appears 91 times). Keying on it silently discards half the
+  bank, so satprep keys on a content hash instead.
+
+Maths renders as MathML, which every current browser handles natively — no
+KaTeX, no MathJax, no build step. Chart colours were run through a
+contrast/colour-blindness validator against this app's own surfaces rather than
+picked by eye.
 
 ---
 
@@ -149,11 +226,21 @@ KaTeX, no MathJax, no build step.
 Useful directions:
 
 - A timed full-module mode (27 R&W questions in 32 minutes) for pacing practice
-- Adaptive second-module logic that mirrors the real scoring
+- Adaptive second-module logic mirroring real scoring
+- A test suite
+- Bundling Python so Windows needs no separate install
 - Export a wrong-answer set to PDF for offline review
 - Better score calibration from real reported score pairs
-- PSAT support (`fetch --assessment psat` already pulls the bank; the blueprint
-  weights and pacing targets in `scheduler.py`/`stats.py` are SAT-specific)
+- PSAT support (`fetch --assessment psat` already works; the blueprint weights
+  and pacing targets are SAT-specific)
 
-Keep the zero-dependency constraint if you can — it's most of the reason a
-student can go from `git clone` to practising in two minutes.
+Keep the zero-Python-dependency constraint if you can — it is most of the reason
+a student can go from clone to practising in two minutes.
+
+## Licence
+
+Code is [MIT](LICENSE). The licence covers the software only, explicitly not the
+questions, which are not ours to license. See [ATTRIBUTION.md](ATTRIBUTION.md).
+
+SAT® and College Board are trademarks registered by College Board, which does
+not endorse and is not affiliated with this project.

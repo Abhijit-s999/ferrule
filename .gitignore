@@ -12,3 +12,7 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# Node / Electron
+node_modules/
+dist/
