@@ -23,6 +23,19 @@ npm install && npm start
 On first launch the app offers to download the question bank for you. That is
 the whole setup.
 
+To put it in your application launcher (Linux, any desktop):
+
+```bash
+./scripts/install-desktop.sh              # adds the entry and icons
+./scripts/install-desktop.sh --uninstall  # removes them again
+```
+
+That writes a desktop entry, a `satprep` launcher on your PATH, and icons at
+every standard size — all under `~/.local/share`, so it needs no root. After
+that, satprep appears in your launcher like any installed program, and the
+compositor matches its window to the entry, so the taskbar shows the real icon
+rather than a generic Electron one.
+
 To build a distributable binary:
 
 ```bash
