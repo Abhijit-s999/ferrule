@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS questions (
     options        TEXT,                  -- JSON: [{"letter","content"}]
     correct_answer TEXT,                  -- JSON: ["B"] or ["403", "403.0"]
     rationale      TEXT,
+    -- When College Board added / last revised the question in its bank. Almost
+    -- always identical to each other; kept separate in case that changes.
+    created_at     INTEGER,
+    updated_at     INTEGER,
     fetched_at     INTEGER
 );
 
@@ -108,7 +112,11 @@ def _migrate(conn):
         conn.execute(
             "ALTER TABLE questions ADD COLUMN source TEXT NOT NULL DEFAULT 'collegeboard'"
         )
+    for col in ("created_at", "updated_at"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE questions ADD COLUMN {col} INTEGER")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_q_source ON questions(source)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_q_created ON questions(created_at)")
     conn.commit()
 
 
@@ -190,12 +198,14 @@ def upsert_question_stub(conn, row, test, test_name):
         """
         INSERT INTO questions
             (external_id, question_id, program, test, test_name, domain_cd, domain,
-             skill_cd, skill, difficulty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             skill_cd, skill, difficulty, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(external_id) DO UPDATE SET
             difficulty = excluded.difficulty,
             skill      = excluded.skill,
-            domain     = excluded.domain
+            domain     = excluded.domain,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at
         """,
         (
             row.get("external_id"),
@@ -208,6 +218,8 @@ def upsert_question_stub(conn, row, test, test_name):
             row.get("skill_cd"),
             row.get("skill_desc"),
             row.get("difficulty"),
+            row.get("createDate"),
+            row.get("updateDate"),
         ),
     )
 

@@ -172,11 +172,22 @@ class Handler(BaseHTTPRequestHandler):
                 minutes = int(q.get("minutes", ["30"])[0])
                 return self._send(stats.study_plan(_conn(), minutes))
 
+            if route == "/api/vintages":
+                conn = _conn()
+                return self._send(
+                    {
+                        "vintages": stats.vintages(conn),
+                        "min_created": scheduler.min_created(conn),
+                    }
+                )
+
             if route == "/api/sources":
                 conn = _conn()
                 return self._send(
                     {
                         "sources": stats.by_source(conn),
+                        "vintages": stats.vintages(conn),
+                        "min_created": scheduler.min_created(conn),
                         "enabled": sources.enabled_ids(conn),
                         "catalog": list(sources.SOURCES.values()),
                         "not_fetched": list(sources.NOT_FETCHED.values()),
@@ -262,6 +273,16 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/tutor/explain":
                 return self._explain()
+
+            if route == "/api/vintages":
+                conn = _conn()
+                scheduler.set_min_created(conn, self._body().get("min_created", 0))
+                return self._send(
+                    {
+                        "min_created": scheduler.min_created(conn),
+                        "vintages": stats.vintages(conn),
+                    }
+                )
 
             if route == "/api/fetch/start":
                 with _fetch_lock:
