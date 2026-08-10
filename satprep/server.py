@@ -216,6 +216,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/bank":
                 return self._send(self._bank(q))
 
+            if route == "/api/bank/queue":
+                return self._send({"questions": self._bank_queue(q)})
+
             if route == "/api/skills":
                 rows = _conn().execute(
                     """SELECT test, test_name, domain, skill, COUNT(*) AS n
@@ -345,6 +348,14 @@ class Handler(BaseHTTPRequestHandler):
                 where.append(f"{col} = ?")
                 params.append(int(val) if key == "test" else val)
 
+        # Date filter. Only College Board questions carry a date, so an active
+        # cutoff necessarily excludes the undated community set -- same rule the
+        # practice scheduler uses.
+        since = one("since")
+        if since and since != "0":
+            where.append("q.created_at IS NOT NULL AND q.created_at >= ?")
+            params.append(int(since))
+
         search = (one("q") or "").strip()
         if search:
             where.append("(q.stem LIKE ? OR q.stimulus LIKE ?)")
@@ -400,6 +411,56 @@ class Handler(BaseHTTPRequestHandler):
         }
         return {"items": items, "total": total, "page": page, "per": per,
                 "pages": max(1, -(-total // per)), "facets": facets}
+
+    def _bank_queue(self, q):
+        """A batch of questions for an uninterrupted run through the bank.
+
+        The client keeps these buffered and refills before running out, so
+        moving to the next question never waits on the network. Any pause
+        between answering and the next question is the thing that breaks
+        concentration, so the transition has to be free.
+
+        Unattempted questions come first; once those run out it wraps onto
+        seen ones rather than stopping.
+        """
+        one = lambda k, d=None: (q.get(k) or [d])[0]
+        n = min(60, max(5, int(one("n", "25"))))
+
+        where, params = ["q.stem IS NOT NULL", "q.stem != ''"], []
+        for key, col in (("test", "q.test"), ("domain", "q.domain"),
+                         ("skill", "q.skill"), ("difficulty", "q.difficulty"),
+                         ("source", "q.source")):
+            val = one(key)
+            if val:
+                where.append(f"{col} = ?")
+                params.append(int(val) if key == "test" else val)
+
+        since = one("since")
+        if since and since != "0":
+            where.append("q.created_at IS NOT NULL AND q.created_at >= ?")
+            params.append(int(since))
+
+        search = (one("q") or "").strip()
+        if search:
+            where.append("(q.stem LIKE ? OR q.stimulus LIKE ?)")
+            params += [f"%{search}%", f"%{search}%"]
+
+        exclude = [x for x in (one("exclude", "") or "").split(",") if x]
+        if exclude:
+            where.append(f"q.external_id NOT IN ({','.join('?' * len(exclude))})")
+            params += exclude
+
+        rows = _conn().execute(
+            f"""SELECT q.*, COUNT(a.id) AS seen
+                FROM questions q
+                LEFT JOIN attempts a ON a.external_id = q.external_id
+                WHERE {' AND '.join(where)}
+                GROUP BY q.external_id
+                ORDER BY seen ASC, RANDOM()
+                LIMIT ?""",
+            params + [n],
+        ).fetchall()
+        return [db.row_to_question(r) for r in rows]
 
     def _explain(self):
         """Stream a tutor explanation for one question."""
