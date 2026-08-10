@@ -30,6 +30,44 @@
   }
 }
 
+/* ---------- chart palette ----------
+   Difficulty is ordinal (Easy < Medium < Hard), so it is one hue in three
+   steps, not three unrelated hues. Both modes were run through the palette
+   validator against this app's own card surfaces rather than eyeballed. */
+:root {
+  --ord-1: #86b6ef;   /* Easy   */
+  --ord-2: #3987e5;   /* Medium */
+  --ord-3: #1c5cab;   /* Hard   */
+
+  --div-neg-2: #c0392f;
+  --div-neg-1: #e8827f;
+  --div-mid:   #e6e5e1;
+  --div-pos-1: #86b6ef;
+  --div-pos-2: #2a78d6;
+  --cell-empty: #f2f1ee;
+
+  --grid: #e1e0d9;
+  --tick: #898781;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ord-1: #5598e7;
+    --ord-2: #2a78d6;
+    --ord-3: #184f95;
+
+    --div-neg-2: #b23a35;
+    --div-neg-1: #7d3330;
+    --div-mid:   #383835;
+    --div-pos-1: #24557f;
+    --div-pos-2: #3987e5;
+    --cell-empty: #232528;
+
+    --grid: #2c2c2a;
+    --tick: #898781;
+  }
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -220,6 +258,142 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var
 .spark > div { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; opacity: .8; }
 
 .empty { text-align: center; padding: 50px 20px; color: var(--muted); }
+
+/* ---------- charts ---------- */
+
+.chart { width: 100%; height: auto; display: block; }
+.chart .grid   { stroke: var(--grid); stroke-width: 1; }
+.chart .sep    { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .tick   { fill: var(--tick); font-size: 10.5px; text-anchor: middle; }
+.chart .tick.muted { opacity: .75; font-size: 9.5px; }
+.chart .tick.group { fill: var(--text); font-size: 11px; font-weight: 600; }
+.chart .tick.accent { fill: var(--accent); font-weight: 600; text-anchor: start; }
+.chart .vlabel { fill: var(--text); font-size: 10.5px; font-weight: 600; text-anchor: middle; }
+.chart .cumline { fill: none; stroke: var(--accent); stroke-width: 2;
+                  stroke-linejoin: round; stroke-linecap: round; }
+.chart .cumdot  { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.chart .target  { stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: .8; }
+.chart .target-t { fill: var(--bad); text-anchor: start; font-size: 9.5px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px;
+          font-size: 12px; color: var(--muted); align-items: center; }
+.legend .lg { display: inline-flex; align-items: center; gap: 6px; }
+.legend .lg i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.legend .lg i.line { height: 3px; width: 16px; border-radius: 2px; }
+
+/* ---------- heatmap ---------- */
+
+.heat { display: block; overflow-x: auto; }
+.heat-head, .heat-row {
+  display: grid; grid-template-columns: minmax(170px, 360px) repeat(4, 58px);
+  gap: 2px; align-items: center; justify-content: start;
+}
+.heat-head { position: sticky; top: 0; }
+.heat-head span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+                  color: var(--muted); text-align: center; padding-bottom: 6px; }
+.heat-domain { font-size: 12px; font-weight: 620; color: var(--muted);
+               margin: 14px 0 5px; }
+.heat-row { margin-bottom: 2px; }
+.heat-label {
+  font-size: 13px; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; padding-right: 10px;
+}
+.heat-cell {
+  height: 34px; border-radius: 5px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; line-height: 1;
+  cursor: default; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.35);
+}
+.heat-cell b { font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.heat-cell i { font-size: 9px; font-style: normal; opacity: .85; margin-top: 1px; }
+/* `blank` = no attempts yet. Deliberately not called `empty`: that is a global
+   empty-state utility whose padding would inflate the cell. */
+.heat-cell.blank {
+  color: var(--muted); text-shadow: none;
+  box-shadow: inset 0 0 0 1px var(--border); background: transparent !important;
+}
+.heat-cell:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.heat-total {
+  text-align: center; font-size: 12.5px; font-variant-numeric: tabular-nums;
+  display: flex; flex-direction: column; line-height: 1.15;
+}
+.heat-total i { font-size: 9px; font-style: normal; color: var(--muted); }
+.cliff {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .04em;
+  background: var(--bad-bg); color: var(--bad); border-radius: 3px;
+  padding: 1px 5px; margin-left: 6px; vertical-align: middle;
+}
+.heat-legend { margin-top: 16px; }
+
+/* ---------- settings / models ---------- */
+
+.models { display: grid; gap: 12px; }
+.model {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px;
+}
+.model.rec { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.model-head { margin-bottom: 10px; }
+.model-body { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+.model-body ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.55; }
+.pros li::marker { content: '+  '; color: var(--good); }
+.cons li::marker { content: '−  '; color: var(--bad); }
+.cons li { color: var(--muted); }
+
+.pill.rec { background: var(--accent); color: #fff; }
+.pill.ok { background: var(--good-bg); color: var(--good); }
+.pill.fit { background: var(--good-bg); color: var(--good); }
+.pill.tight { background: var(--bad-bg); color: var(--warn); }
+.pill.toobig { background: var(--border); color: var(--muted); }
+.pill { background: var(--border); color: var(--muted); margin-left: 6px; }
+
+.card.err { border-color: var(--bad); }
+.log {
+  font: 12px var(--mono); white-space: pre-wrap; word-break: break-word;
+  background: var(--bad-bg); padding: 10px 12px; border-radius: 7px;
+  max-height: 220px; overflow: auto; margin: 10px 0 0;
+}
+
+.srcrow {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 13px 0; border-bottom: 1px solid var(--border);
+}
+.srcrow:last-child { border-bottom: 0; }
+.srcrow.off { opacity: .7; }
+.srcrow input { margin-top: 4px; }
+.srcrow a { text-decoration: none; }
+.srcrow a:hover { text-decoration: underline; }
+
+/* ---------- tutor ---------- */
+
+.tutor {
+  margin-top: 16px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 9px; padding: 14px 16px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+.tutor-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--accent); font-weight: 650; margin-bottom: 8px;
+}
+.tutor-body { font-size: 14.5px; line-height: 1.65; white-space: pre-wrap; }
+
+/* ---------- pace bars ---------- */
+
+.pace { display: flex; flex-direction: column; gap: 9px; }
+.pace-row { display: grid; grid-template-columns: 108px 1fr 44px 52px;
+            gap: 10px; align-items: center; font-size: 13px; }
+.pace-label { color: var(--muted); font-size: 12px; }
+.pace-track { position: relative; height: 15px; background: var(--border);
+              border-radius: 4px; overflow: visible; }
+.pace-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
+.pace-target { position: absolute; top: -3px; bottom: -3px; width: 2px;
+               background: var(--text); opacity: .75; border-radius: 1px; }
+.pace-num { text-align: right; font-variant-numeric: tabular-nums;
+            font-family: var(--mono); font-size: 12px; }
+
+@media (max-width: 620px) {
+  .heat-head, .heat-row { grid-template-columns: minmax(130px, 1fr) repeat(4, 46px); }
+  .pace-row { grid-template-columns: 88px 1fr 40px 46px; }
+}
 
 /* MathML. College Board ships fractions and radicals inline with the prose;
    without a size bump the numerator/denominator render too small to read. */

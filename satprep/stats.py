@@ -6,7 +6,7 @@ Everything here answers one of three questions:
   - What should I do with the next 30 minutes?
 """
 
-from . import db, scheduler
+from . import db, scheduler, sources
 
 # Official section timing. 64 min for 54 R&W questions, 70 min for 44 Math.
 PACE_TARGET_MS = {1: 71_000, 2: 95_000}
@@ -45,6 +45,14 @@ def overview(conn):
         "SELECT COUNT(*) AS n FROM reviews WHERE due_at <= ?", (db.now_ms(),)
     ).fetchone()["n"]
 
+    enabled = sources.enabled_ids(conn)
+    placeholders = ",".join("?" * len(enabled))
+    available = conn.execute(
+        f"""SELECT COUNT(*) AS n FROM questions
+            WHERE stem IS NOT NULL AND stem != '' AND source IN ({placeholders})""",
+        enabled,
+    ).fetchone()["n"]
+
     return {
         "attempts": attempts,
         "correct": correct,
@@ -52,9 +60,77 @@ def overview(conn):
         "avg_ms": int(row["avg_ms"] or 0),
         "by_test": by_test,
         "due_reviews": due,
-        "bank_size": db.question_count(conn),
-        "projection": project_score(by_test),
+        "bank_size": available,
+        "bank_total": db.question_count(conn),
+        "enabled_sources": enabled,
+        "by_source": by_source(conn),
+        # Scored from official questions only. Community questions are not
+        # calibrated to real exam difficulty, so folding them in would make the
+        # estimate mean nothing.
+        "projection": project_score(_by_test(conn, source="collegeboard")),
     }
+
+
+def _by_test(conn, source=None):
+    where, params = "", []
+    if source:
+        where = "WHERE q.source = ?"
+        params.append(source)
+    out = {}
+    for r in conn.execute(
+        f"""SELECT q.test, q.test_name, COUNT(a.id) AS attempts,
+                   COALESCE(SUM(a.correct), 0) AS correct
+            FROM attempts a JOIN questions q ON q.external_id = a.external_id
+            {where} GROUP BY q.test""",
+        params,
+    ):
+        out[r["test"]] = {
+            "test_name": r["test_name"],
+            "attempts": r["attempts"],
+            "accuracy": r["correct"] / r["attempts"] if r["attempts"] else None,
+        }
+    return out
+
+
+def by_source(conn):
+    """Accuracy per source, so official numbers never blend with community ones."""
+    rows = conn.execute(
+        """
+        SELECT q.source,
+               COUNT(a.id)                               AS attempts,
+               COALESCE(SUM(a.correct), 0)               AS correct,
+               COALESCE(AVG(NULLIF(a.elapsed_ms, 0)), 0) AS avg_ms
+        FROM questions q
+        LEFT JOIN attempts a ON a.external_id = q.external_id
+        GROUP BY q.source
+        """
+    ).fetchall()
+
+    enabled = set(sources.enabled_ids(conn))
+    out = []
+    for r in rows:
+        meta = sources.get(r["source"]) or {}
+        bank = conn.execute(
+            "SELECT COUNT(*) AS n FROM questions "
+            "WHERE source = ? AND stem IS NOT NULL AND stem != ''",
+            (r["source"],),
+        ).fetchone()["n"]
+        out.append(
+            {
+                "source": r["source"],
+                "name": meta.get("name", r["source"]),
+                "short": meta.get("short", r["source"]),
+                "url": meta.get("url"),
+                "official": meta.get("official", False),
+                "enabled": r["source"] in enabled,
+                "bank": bank,
+                "attempts": r["attempts"],
+                "correct": r["correct"],
+                "accuracy": (r["correct"] / r["attempts"]) if r["attempts"] else None,
+                "avg_ms": int(r["avg_ms"] or 0),
+            }
+        )
+    return sorted(out, key=lambda s: (not s["official"], s["source"]))
 
 
 def by_type(conn):
@@ -89,6 +165,192 @@ def by_type(conn):
             }
         )
     return sorted(out, key=lambda d: (d["test"], -d["attempts"]))
+
+
+DIFFICULTY_ORDER = ["E", "M", "H"]
+DIFFICULTY_NAMES = {"E": "Easy", "M": "Medium", "H": "Hard"}
+
+# Accuracy the heatmap treats as "on target"; cells diverge above and below it.
+TARGET_ACCURACY = 0.75
+
+
+def skill_difficulty_matrix(conn):
+    """Accuracy per skill per difficulty -- the finest grain the data supports.
+
+    A skill you handle at Easy but lose at Hard is a different problem from one
+    you miss everywhere: the first needs practice at the top of the range, the
+    second needs the underlying concept. One number per skill hides that; this
+    matrix is what separates them.
+    """
+    enabled = sources.enabled_ids(conn)
+    placeholders = ",".join("?" * len(enabled))
+    rows = conn.execute(
+        f"""
+        SELECT q.test, q.test_name, q.domain, q.skill, q.difficulty,
+               COUNT(a.id)                               AS attempts,
+               COALESCE(SUM(a.correct), 0)               AS correct,
+               COALESCE(AVG(NULLIF(a.elapsed_ms, 0)), 0) AS avg_ms,
+               SUM(CASE WHEN a.id IS NULL THEN 1 ELSE 0 END) AS unseen
+        FROM questions q
+        LEFT JOIN attempts a ON a.external_id = q.external_id
+        WHERE q.stem IS NOT NULL AND q.stem != '' AND q.source IN ({placeholders})
+        GROUP BY q.test, q.domain, q.skill, q.difficulty
+        """,
+        enabled,
+    ).fetchall()
+
+    skills = {}
+    for r in rows:
+        key = (r["test"], r["test_name"], r["domain"], r["skill"])
+        entry = skills.setdefault(
+            key,
+            {
+                "test": r["test"],
+                "test_name": r["test_name"],
+                "domain": r["domain"],
+                "skill": r["skill"],
+                "cells": {d: None for d in DIFFICULTY_ORDER},
+                "attempts": 0,
+                "correct": 0,
+            },
+        )
+        if r["difficulty"] not in DIFFICULTY_ORDER:
+            continue
+        entry["cells"][r["difficulty"]] = {
+            "difficulty": r["difficulty"],
+            "attempts": r["attempts"],
+            "correct": r["correct"],
+            "accuracy": (r["correct"] / r["attempts"]) if r["attempts"] else None,
+            "avg_ms": int(r["avg_ms"] or 0),
+            "available": r["unseen"],
+        }
+        entry["attempts"] += r["attempts"]
+        entry["correct"] += r["correct"]
+
+    out = list(skills.values())
+    for e in out:
+        e["accuracy"] = (e["correct"] / e["attempts"]) if e["attempts"] else None
+        # A skill that holds up on Easy but collapses on Hard: worth naming.
+        easy, hard = e["cells"].get("E"), e["cells"].get("H")
+        e["cliff"] = bool(
+            easy and hard and easy["attempts"] >= 2 and hard["attempts"] >= 2
+            and easy["accuracy"] is not None and hard["accuracy"] is not None
+            and easy["accuracy"] - hard["accuracy"] >= 0.34
+        )
+    return sorted(out, key=lambda e: (e["test"], e["domain"], e["skill"]))
+
+
+def difficulty_breakdown(conn):
+    """Overall accuracy and pace at each difficulty, per section."""
+    enabled = sources.enabled_ids(conn)
+    placeholders = ",".join("?" * len(enabled))
+    rows = conn.execute(
+        f"""
+        SELECT q.test, q.test_name, q.difficulty,
+               COUNT(a.id)                               AS attempts,
+               COALESCE(SUM(a.correct), 0)               AS correct,
+               COALESCE(AVG(NULLIF(a.elapsed_ms, 0)), 0) AS avg_ms
+        FROM attempts a JOIN questions q ON q.external_id = a.external_id
+        WHERE q.source IN ({placeholders})
+        GROUP BY q.test, q.difficulty
+        """,
+        enabled,
+    ).fetchall()
+
+    out = {}
+    for r in rows:
+        bucket = out.setdefault(
+            r["test"], {"test": r["test"], "test_name": r["test_name"], "levels": {}}
+        )
+        bucket["levels"][r["difficulty"]] = {
+            "difficulty": r["difficulty"],
+            "label": DIFFICULTY_NAMES.get(r["difficulty"], r["difficulty"]),
+            "attempts": r["attempts"],
+            "correct": r["correct"],
+            "accuracy": (r["correct"] / r["attempts"]) if r["attempts"] else None,
+            "avg_ms": int(r["avg_ms"] or 0),
+            "pace_target_ms": PACE_TARGET_MS.get(r["test"]),
+        }
+    return sorted(out.values(), key=lambda b: b["test"])
+
+
+def timeline(conn, days=21):
+    """Per-day volume, accuracy and time spent -- the effort record."""
+    rows = conn.execute(
+        """
+        SELECT DATE(a.answered_at / 1000, 'unixepoch', 'localtime') AS day,
+               COUNT(*)                     AS attempts,
+               SUM(a.correct)               AS correct,
+               SUM(a.elapsed_ms)            AS total_ms
+        FROM attempts a
+        GROUP BY day ORDER BY day
+        """
+    ).fetchall()
+    out = []
+    running = 0
+    for r in rows[-days:]:
+        running += r["attempts"]
+        out.append(
+            {
+                "day": r["day"],
+                "attempts": r["attempts"],
+                "correct": r["correct"],
+                "accuracy": r["correct"] / r["attempts"] if r["attempts"] else None,
+                "minutes": round((r["total_ms"] or 0) / 60000, 1),
+                "cumulative": running,
+            }
+        )
+    return out
+
+
+def time_distribution(conn):
+    """How long questions take, bucketed, split by difficulty.
+
+    Averages hide the tail. A 40-second average with a handful of four-minute
+    questions is a pacing problem an average will never show you.
+    """
+    enabled = sources.enabled_ids(conn)
+    placeholders = ",".join("?" * len(enabled))
+    rows = conn.execute(
+        f"""
+        SELECT q.difficulty, q.test, a.elapsed_ms, a.correct
+        FROM attempts a JOIN questions q ON q.external_id = a.external_id
+        WHERE a.elapsed_ms > 0 AND q.source IN ({placeholders})
+        """,
+        enabled,
+    ).fetchall()
+
+    edges = [0, 15, 30, 45, 60, 90, 120, 180, 300]
+    buckets = []
+    for i, lo in enumerate(edges):
+        hi = edges[i + 1] if i + 1 < len(edges) else None
+        buckets.append(
+            {
+                "lo": lo,
+                "hi": hi,
+                "label": f"{lo}-{hi}s" if hi else f"{lo}s+",
+                "counts": {d: 0 for d in DIFFICULTY_ORDER},
+                "correct": 0,
+                "total": 0,
+            }
+        )
+
+    for r in rows:
+        secs = r["elapsed_ms"] / 1000
+        idx = 0
+        for i, b in enumerate(buckets):
+            if b["hi"] is None or secs < b["hi"]:
+                idx = i
+                break
+        b = buckets[idx]
+        if r["difficulty"] in b["counts"]:
+            b["counts"][r["difficulty"]] += 1
+        b["total"] += 1
+        b["correct"] += r["correct"]
+
+    for b in buckets:
+        b["accuracy"] = (b["correct"] / b["total"]) if b["total"] else None
+    return buckets
 
 
 def weakest(conn, limit=6):

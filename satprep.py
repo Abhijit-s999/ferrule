@@ -10,7 +10,7 @@
 import argparse
 import sys
 
-from satprep import db, fetch, server, stats
+from satprep import db, fetch, server, sources, stats
 
 
 def cmd_fetch(args):
@@ -22,10 +22,47 @@ def cmd_fetch(args):
             insecure=args.insecure,
             workers=args.workers,
             limit=args.limit,
+            with_opensat=args.with_opensat,
+            only=args.source,
         )
     except fetch.FetchError as e:
         print(f"\nfetch failed: {e}", file=sys.stderr)
         return 1
+    return 0
+
+
+def cmd_sources(args):
+    conn = db.connect(args.db)
+
+    if args.enable or args.disable:
+        current = set(sources.enabled_ids(conn))
+        current |= set(args.enable or [])
+        current -= set(args.disable or [])
+        try:
+            sources.set_enabled(conn, sorted(current))
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+
+    enabled = set(sources.enabled_ids(conn))
+    print()
+    for src in sources.SOURCES.values():
+        n = conn.execute(
+            "SELECT COUNT(*) FROM questions WHERE source = ? "
+            "AND stem IS NOT NULL AND stem != ''",
+            (src["id"],),
+        ).fetchone()[0]
+        mark = "on " if src["id"] in enabled else "off"
+        tag = "official" if src["official"] else "community"
+        print(f"  [{mark}] {src['short']:<16} {n:>5} questions   {tag}")
+        print(f"        {src['url']}")
+        print(f"        {src['why']}\n")
+
+    print("  Not fetched, by design:")
+    for nf in sources.NOT_FETCHED.values():
+        print(f"    {nf['name']} -- {nf['url']}")
+        print(f"      {nf['reason']}")
+        print(f"      {nf['status']}\n")
     return 0
 
 
@@ -106,7 +143,16 @@ def main():
     f.add_argument("--limit", type=int, help="stop after N questions (for testing)")
     f.add_argument("--insecure", action="store_true",
                    help="skip TLS verification (networks that intercept TLS)")
+    f.add_argument("--with-opensat", action="store_true",
+                   help="also download the OpenSAT community question database")
+    f.add_argument("--source", choices=["collegeboard", "opensat"],
+                   help="fetch only this source")
     f.set_defaults(func=cmd_fetch)
+
+    sr = sub.add_parser("sources", help="list question sources, enable or disable them")
+    sr.add_argument("--enable", nargs="+", choices=list(sources.SOURCES))
+    sr.add_argument("--disable", nargs="+", choices=list(sources.SOURCES))
+    sr.set_defaults(func=cmd_sources)
 
     s = sub.add_parser("serve", help="run the practice app")
     s.add_argument("--host", default="127.0.0.1")

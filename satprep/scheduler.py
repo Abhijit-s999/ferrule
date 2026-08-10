@@ -17,7 +17,14 @@ import json
 import math
 import random
 
-from . import db
+from . import db, sources
+
+
+def _source_filter(conn, alias="q"):
+    """SQL fragment restricting a query to the sources the user practises from."""
+    ids = sources.enabled_ids(conn)
+    placeholders = ",".join("?" * len(ids))
+    return f"AND {alias}.source IN ({placeholders})", list(ids)
 
 # Share of the real digital SAT each domain occupies. Used so that a weak but
 # rare skill cannot crowd out a slightly-less-weak skill worth triple the points.
@@ -43,12 +50,19 @@ INTERVALS = [0.01, 0.05, 0.5, 1.5, 3.0, 6.0]
 MINUTE_MS = 60_000
 
 
-def skill_stats(conn, test=None):
+def skill_stats(conn, test=None, source=None):
     """Per-skill accuracy, volume and pacing, blended with the prior."""
-    where, params = "", []
+    where, params = "WHERE 1=1", []
     if test:
-        where = "WHERE q.test = ?"
+        where += " AND q.test = ?"
         params.append(test)
+    if source:
+        where += " AND q.source = ?"
+        params.append(source)
+    else:
+        clause, sparams = _source_filter(conn)
+        where += " " + clause
+        params.extend(sparams)
     rows = conn.execute(
         f"""
         SELECT q.test, q.test_name, q.domain, q.skill,
@@ -109,6 +123,9 @@ def due_reviews(conn, limit, test=None):
     if test:
         where = "AND q.test = ?"
         params.append(test)
+    clause, sparams = _source_filter(conn)
+    where += " " + clause
+    params.extend(sparams)
     params.append(db.now_ms())
     params.append(limit)
     return conn.execute(
@@ -128,17 +145,18 @@ def _unseen_for_skill(conn, skill, difficulties, exclude, allow_practice_test=Fa
     """One unattempted question in this skill, preferring the target difficulty."""
     placeholders = ",".join("?" * len(exclude)) if exclude else "''"
     reserve = "" if allow_practice_test else "AND q.in_practice_test = 0"
+    sclause, sparams = _source_filter(conn)
     for diff in difficulties + [None]:
         sql = f"""
             SELECT q.* FROM questions q
             LEFT JOIN attempts a ON a.external_id = q.external_id
             WHERE q.skill = ? AND q.stem IS NOT NULL AND q.stem != ''
-              AND a.id IS NULL {reserve}
+              AND a.id IS NULL {reserve} {sclause}
               AND q.external_id NOT IN ({placeholders})
               {"AND q.difficulty = ?" if diff else ""}
             ORDER BY RANDOM() LIMIT 1
         """
-        params = [skill] + list(exclude) + ([diff] if diff else [])
+        params = [skill] + sparams + list(exclude) + ([diff] if diff else [])
         row = conn.execute(sql, params).fetchone()
         if row:
             return row
@@ -156,6 +174,7 @@ def select_questions(
     """
     picked, seen = [], set()
     reserve = "" if allow_practice_test else "AND q.in_practice_test = 0"
+    sclause, sparams = _source_filter(conn)
 
     if skill:  # explicit drill: one skill, nothing else
         rows = conn.execute(
@@ -163,10 +182,10 @@ def select_questions(
             SELECT q.* FROM questions q
             LEFT JOIN attempts a ON a.external_id = q.external_id
             WHERE q.skill = ? AND q.stem IS NOT NULL AND q.stem != ''
-              AND a.id IS NULL {reserve}
+              AND a.id IS NULL {reserve} {sclause}
             ORDER BY RANDOM() LIMIT ?
             """,
-            (skill, n),
+            [skill] + sparams + [n],
         ).fetchall()
         return [db.row_to_question(r) for r in rows]
 
@@ -208,12 +227,13 @@ def select_questions(
             f"""
             SELECT q.* FROM questions q
             LEFT JOIN attempts a ON a.external_id = q.external_id
-            WHERE q.stem IS NOT NULL AND q.stem != '' AND a.id IS NULL {reserve}
+            WHERE q.stem IS NOT NULL AND q.stem != '' AND a.id IS NULL
+              {reserve} {sclause}
               AND q.external_id NOT IN ({placeholders})
               {"AND q.test = ?" if test else ""}
             ORDER BY RANDOM() LIMIT ?
             """,
-            list(seen) + ([test] if test else []) + [n - len(picked)],
+            sparams + list(seen) + ([test] if test else []) + [n - len(picked)],
         ).fetchall()
         picked.extend(extra)
 

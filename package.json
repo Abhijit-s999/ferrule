@@ -1,0 +1,39 @@
+{
+  "name": "satprep",
+  "version": "0.2.0",
+  "description": "Adaptive SAT practice with per-skill analytics and an optional local AI tutor",
+  "license": "MIT",
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:linux": "electron-builder --linux AppImage",
+    "build:win": "electron-builder --win nsis",
+    "build:mac": "electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "org.satprep.app",
+    "productName": "satprep",
+    "files": [
+      "desktop/**/*",
+      "satprep/**/*",
+      "satprep.py",
+      "README.md",
+      "ATTRIBUTION.md",
+      "LICENSE",
+      "!**/__pycache__/**",
+      "!**/*.pyc"
+    ],
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Education",
+      "icon": "desktop/icon.png"
+    },
+    "win": { "target": ["nsis"], "icon": "desktop/icon.png" },
+    "mac": { "target": ["dmg"], "category": "public.app-category.education" }
+  }
+}

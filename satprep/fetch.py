@@ -192,14 +192,54 @@ def fetch_content(conn, insecure=False, workers=6, limit=None):
     return done
 
 
-def run(conn, assessment="sat", insecure=False, workers=6, limit=None):
-    asmt = ASSESSMENTS.get(assessment, 99)
-    print("Pass 1: indexing question tags")
-    indexed = fetch_index(conn, asmt, insecure)
-    print(f"  {indexed} questions indexed\n")
-    print("Pass 2: downloading question content")
-    fetch_content(conn, insecure, workers, limit)
+# --------------------------------------------------------------------------
+# OpenSAT (community-written questions; see sources.py for licence terms)
+# --------------------------------------------------------------------------
+
+OPENSAT_URL = "https://api.jsonsilo.com/public/942c3c3b-3a0c-4be3-81c2-12029def19f5"
+
+
+def fetch_opensat(conn, insecure=False):
+    """Download the OpenSAT database. One request; the whole set is one blob."""
+    data = _request(OPENSAT_URL, None, insecure, timeout=90)
+    stored = 0
+    for section in ("english", "math"):
+        items = data.get(section) or []
+        for item in items:
+            if not item.get("id") or not (item.get("question") or {}).get("question"):
+                continue
+            db.store_opensat_question(conn, item, section)
+            stored += 1
+        conn.commit()
+        print(f"  stored {len(items):>5} {section} questions", flush=True)
+    return stored
+
+
+def run(conn, assessment="sat", insecure=False, workers=6, limit=None,
+        with_opensat=False, only=None):
+    """Fetch enabled sources into the local database."""
+    if only in (None, "collegeboard"):
+        asmt = ASSESSMENTS.get(assessment, 99)
+        print("College Board -- pass 1: indexing question tags")
+        indexed = fetch_index(conn, asmt, insecure)
+        print(f"  {indexed} questions indexed\n")
+        print("College Board -- pass 2: downloading question content")
+        fetch_content(conn, insecure, workers, limit)
+
+    if with_opensat or only == "opensat":
+        print("\nOpenSAT -- downloading community question database")
+        try:
+            n = fetch_opensat(conn, insecure)
+            print(f"  {n} OpenSAT questions stored")
+        except FetchError as e:
+            print(f"  OpenSAT fetch failed (continuing): {e}", file=sys.stderr)
+
     db.set_meta(conn, "last_fetch", db.now_ms())
     complete = db.question_count(conn, only_complete=True)
     print(f"\nReady: {complete} questions available locally.")
+    for row in conn.execute(
+        "SELECT source, COUNT(*) n FROM questions "
+        "WHERE stem IS NOT NULL AND stem != '' GROUP BY source"
+    ):
+        print(f"  {row['source']:<14} {row['n']}")
     return complete

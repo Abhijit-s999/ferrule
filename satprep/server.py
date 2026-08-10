@@ -8,16 +8,54 @@ import json
 import mimetypes
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import db, scheduler, stats
+from . import db, runtime, scheduler, sources, stats, tutor
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 # SQLite connections are not shared across threads; give each its own.
 _local = threading.local()
 _db_path = None
+
+# First-run question download, driven from the UI so nobody needs a terminal.
+FETCH_STATE = {"phase": "idle", "detail": "", "error": "", "count": 0}
+_fetch_lock = threading.Lock()
+
+
+def _run_fetch(with_opensat):
+    """Download the question bank in the background, reporting progress."""
+    import io
+    from contextlib import redirect_stdout
+
+    from . import fetch as fetch_mod
+
+    conn = db.connect(_db_path)
+    buf = io.StringIO()
+
+    def watch():
+        # fetch.run prints progress; surface the latest line to the UI.
+        while FETCH_STATE["phase"] == "running":
+            text = buf.getvalue().strip().splitlines()
+            if text:
+                FETCH_STATE["detail"] = text[-1].strip()
+            FETCH_STATE["count"] = db.question_count(conn)
+            time.sleep(0.6)
+
+    FETCH_STATE.update(phase="running", detail="Starting…", error="")
+    threading.Thread(target=watch, daemon=True).start()
+    try:
+        with redirect_stdout(buf):
+            fetch_mod.run(conn, with_opensat=with_opensat)
+        FETCH_STATE.update(
+            phase="done", detail="Done.", count=db.question_count(conn)
+        )
+    except Exception as e:
+        FETCH_STATE.update(phase="error", error=str(e))
+    finally:
+        conn.close()
 
 
 def _conn():
@@ -61,6 +99,16 @@ class Handler(BaseHTTPRequestHandler):
         if not length:
             return {}
         return json.loads(self.rfile.read(length).decode() or "{}")
+
+    def _stream_start(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def _stream_send(self, obj):
+        self.wfile.write(f"data: {json.dumps(obj)}\n\n".encode())
+        self.wfile.flush()
 
     # ---------- routes ----------
 
@@ -106,9 +154,53 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 )
 
+            if route == "/api/analytics":
+                conn = _conn()
+                return self._send(
+                    {
+                        "overview": stats.overview(conn),
+                        "matrix": stats.skill_difficulty_matrix(conn),
+                        "difficulty": stats.difficulty_breakdown(conn),
+                        "timeline": stats.timeline(conn),
+                        "time_distribution": stats.time_distribution(conn),
+                        "weakest": stats.weakest(conn, limit=8),
+                        "target_accuracy": stats.TARGET_ACCURACY,
+                    }
+                )
+
             if route == "/api/plan":
                 minutes = int(q.get("minutes", ["30"])[0])
                 return self._send(stats.study_plan(_conn(), minutes))
+
+            if route == "/api/sources":
+                conn = _conn()
+                return self._send(
+                    {
+                        "sources": stats.by_source(conn),
+                        "enabled": sources.enabled_ids(conn),
+                        "catalog": list(sources.SOURCES.values()),
+                        "not_fetched": list(sources.NOT_FETCHED.values()),
+                    }
+                )
+
+            if route == "/api/tutor/config":
+                return self._send(
+                    {
+                        "config": tutor.public_config(),
+                        "providers": list(tutor.PROVIDERS.values()),
+                        "vram_gb": tutor.detect_vram_gb(),
+                        "models": tutor.guidance_for(tutor.detect_vram_gb()),
+                    }
+                )
+
+            if route == "/api/tutor/health":
+                return self._send(tutor.health())
+
+            if route == "/api/runtime/status":
+                return self._send(runtime.RUNTIME.status())
+
+            if route == "/api/fetch/status":
+                return self._send(FETCH_STATE)
 
             if route == "/api/skills":
                 rows = _conn().execute(
@@ -149,11 +241,91 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return self._send({"correct": correct, **detail})
 
+            if route == "/api/sources":
+                conn = _conn()
+                try:
+                    enabled = sources.set_enabled(conn, self._body().get("enabled", []))
+                except ValueError as e:
+                    return self._send({"error": str(e)}, 400)
+                return self._send({"enabled": enabled})
+
+            if route == "/api/tutor/config":
+                body = self._body()
+                # An empty api_key means "leave the stored one alone", so the UI
+                # never has to round-trip a secret it deliberately does not hold.
+                if not body.get("api_key"):
+                    body.pop("api_key", None)
+                allowed = {"enabled", "provider", "model", "base_url",
+                           "api_key", "temperature", "max_tokens"}
+                tutor.save_config({k: v for k, v in body.items() if k in allowed})
+                return self._send({"config": tutor.public_config()})
+
+            if route == "/api/tutor/explain":
+                return self._explain()
+
+            if route == "/api/fetch/start":
+                with _fetch_lock:
+                    if FETCH_STATE["phase"] == "running":
+                        return self._send(FETCH_STATE)
+                    opensat = bool(self._body().get("with_opensat"))
+                    threading.Thread(
+                        target=_run_fetch, args=(opensat,), daemon=True
+                    ).start()
+                return self._send({"phase": "running"})
+
+            if route == "/api/runtime/start":
+                model_id = self._body().get("model_id")
+                if not runtime.model_by_id(model_id):
+                    return self._send({"error": f"unknown model {model_id}"}, 400)
+                runtime.RUNTIME.start_async(model_id)
+                return self._send(runtime.RUNTIME.status())
+
+            if route == "/api/runtime/stop":
+                runtime.RUNTIME.stop()
+                tutor.save_config({"enabled": False})
+                return self._send(runtime.RUNTIME.status())
+
+            if route == "/api/runtime/delete":
+                runtime.RUNTIME.delete_model(self._body().get("model_id"))
+                return self._send(runtime.RUNTIME.status())
+
             self.send_error(404)
         except KeyError as e:
             self._send({"error": f"unknown question {e}"}, 404)
         except Exception as e:
             self._send({"error": str(e)}, 500)
+
+    def _explain(self):
+        """Stream a tutor explanation for one question."""
+        body = self._body()
+        conn = _conn()
+        row = conn.execute(
+            "SELECT * FROM questions WHERE external_id = ?", (body["external_id"],)
+        ).fetchone()
+        if not row:
+            return self._send({"error": "unknown question"}, 404)
+
+        question = db.row_to_question(row)
+        question["stem"] = row["stem"]
+        question["stimulus"] = row["stimulus"]
+        detail = {
+            "correct_answer": json.loads(row["correct_answer"] or "[]"),
+            "rationale": row["rationale"] or "",
+        }
+
+        self._stream_start()
+        try:
+            for chunk in tutor.stream_explanation(
+                question, detail, body.get("response"), body.get("mode", "why_wrong")
+            ):
+                self._stream_send({"delta": chunk})
+            self._stream_send({"done": True})
+        except tutor.TutorError as e:
+            self._stream_send({"error": str(e)})
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the user navigated away mid-stream
+        except Exception as e:
+            self._stream_send({"error": f"{type(e).__name__}: {e}"})
 
 
 def serve(host="127.0.0.1", port=8733, db_path=None):
