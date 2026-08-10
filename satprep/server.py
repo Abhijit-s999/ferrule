@@ -213,6 +213,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/fetch/status":
                 return self._send(FETCH_STATE)
 
+            if route == "/api/bank":
+                return self._send(self._bank(q))
+
             if route == "/api/skills":
                 rows = _conn().execute(
                     """SELECT test, test_name, domain, skill, COUNT(*) AS n
@@ -295,15 +298,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"phase": "running"})
 
             if route == "/api/runtime/start":
+                # "Start" now means select + download; loading happens lazily.
                 model_id = self._body().get("model_id")
                 if not runtime.model_by_id(model_id):
                     return self._send({"error": f"unknown model {model_id}"}, 400)
-                runtime.RUNTIME.start_async(model_id)
+                runtime.RUNTIME.select_async(model_id)
+                return self._send(runtime.RUNTIME.status())
+
+            if route == "/api/runtime/eject":
+                # Free the GPU now, keeping the model selected for next time.
+                runtime.RUNTIME.stop()
                 return self._send(runtime.RUNTIME.status())
 
             if route == "/api/runtime/stop":
                 runtime.RUNTIME.stop()
-                tutor.save_config({"enabled": False})
+                tutor.save_config({"enabled": False, "selected_model": ""})
                 return self._send(runtime.RUNTIME.status())
 
             if route == "/api/runtime/delete":
@@ -315,6 +324,82 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": f"unknown question {e}"}, 404)
         except Exception as e:
             self._send({"error": str(e)}, 500)
+
+    def _bank(self, q):
+        """Browse the whole bank: filter, search, page. No timer, no scoring.
+
+        This is the relaxed counterpart to a practice set -- look things up,
+        read the official explanation, work at your own speed. Attempts made
+        here are recorded separately so they do not distort pacing stats.
+        """
+        one = lambda k, d=None: (q.get(k) or [d])[0]
+        page = max(1, int(one("page", "1")))
+        per = min(50, max(5, int(one("per", "20"))))
+
+        where, params = ["q.stem IS NOT NULL", "q.stem != ''"], []
+        for key, col in (("test", "q.test"), ("domain", "q.domain"),
+                         ("skill", "q.skill"), ("difficulty", "q.difficulty"),
+                         ("source", "q.source")):
+            val = one(key)
+            if val:
+                where.append(f"{col} = ?")
+                params.append(int(val) if key == "test" else val)
+
+        search = (one("q") or "").strip()
+        if search:
+            where.append("(q.stem LIKE ? OR q.stimulus LIKE ?)")
+            params += [f"%{search}%", f"%{search}%"]
+
+        if one("unseen") == "1":
+            where.append("a.id IS NULL")
+        if one("missed") == "1":
+            where.append("a.correct = 0")
+
+        clause = " AND ".join(where)
+        conn = _conn()
+        total = conn.execute(
+            f"""SELECT COUNT(DISTINCT q.external_id) AS n FROM questions q
+                LEFT JOIN attempts a ON a.external_id = q.external_id
+                WHERE {clause}""",
+            params,
+        ).fetchone()["n"]
+
+        rows = conn.execute(
+            f"""SELECT q.*,
+                       COUNT(a.id) AS attempts,
+                       COALESCE(SUM(a.correct), 0) AS correct
+                FROM questions q
+                LEFT JOIN attempts a ON a.external_id = q.external_id
+                WHERE {clause}
+                GROUP BY q.external_id
+                ORDER BY q.test, q.domain, q.skill, q.difficulty
+                LIMIT ? OFFSET ?""",
+            params + [per, (page - 1) * per],
+        ).fetchall()
+
+        items = []
+        for r in rows:
+            item = db.row_to_question(r)
+            item["stem"] = r["stem"]
+            item["stimulus"] = r["stimulus"]
+            item["rationale"] = r["rationale"] or ""
+            item["correct_answer"] = json.loads(r["correct_answer"] or "[]")
+            item["attempts"] = r["attempts"]
+            item["correct"] = r["correct"]
+            item["in_practice_test"] = r["in_practice_test"]
+            items.append(item)
+
+        facets = {
+            "skills": [dict(x) for x in conn.execute(
+                """SELECT test, test_name, domain, skill, COUNT(*) n FROM questions
+                   WHERE stem IS NOT NULL AND stem != ''
+                   GROUP BY test, domain, skill ORDER BY test, domain, skill""")],
+            "sources": [dict(x) for x in conn.execute(
+                """SELECT source, COUNT(*) n FROM questions
+                   WHERE stem IS NOT NULL AND stem != '' GROUP BY source""")],
+        }
+        return {"items": items, "total": total, "page": page, "per": per,
+                "pages": max(1, -(-total // per)), "facets": facets}
 
     def _explain(self):
         """Stream a tutor explanation for one question."""
@@ -336,6 +421,11 @@ class Handler(BaseHTTPRequestHandler):
 
         self._stream_start()
         try:
+            # The model is loaded on demand rather than kept resident, so the
+            # first question after a pause pays the load and the rest do not.
+            runtime.RUNTIME.ensure_running(
+                on_status=lambda msg: self._stream_send({"status": msg})
+            )
             for chunk in tutor.stream_explanation(
                 question, detail, body.get("response"), body.get("mode", "why_wrong")
             ):
@@ -363,6 +453,7 @@ def serve(host="127.0.0.1", port=8733, db_path=None):
     # Whatever takes this process down must take the model server with it,
     # otherwise an orphaned llama-server sits on the GPU indefinitely.
     runtime.install_exit_handlers()
+    runtime.RUNTIME.start_idle_watch()
     reaped = runtime.reap_stale_server()
     if reaped:
         print(f"stopped an orphaned model server from a previous run (pid {reaped})")

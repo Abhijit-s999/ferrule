@@ -1,6 +1,20 @@
 'use strict';
 
-const $ = (sel, root = document) => root.querySelector(sel);
+/* satprep front end. Vanilla, no build step.
+ *
+ * Three things here are worth knowing before reading:
+ *
+ *  - The exam clock is a countdown for the whole set, pinned to the top of the
+ *    window and hideable, the way the real test does it. Per-question timing
+ *    still drives the pacing analytics underneath.
+ *  - The model is loaded lazily. The header chip is the single place that
+ *    reports whether it is resident, and the only place you can evict it.
+ *  - A download button IS its own progress bar. There is exactly one element
+ *    showing download state, so a partial update cannot desynchronise it.
+ */
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const main = $('#main');
 
 const api = async (path, opts) => {
@@ -16,136 +30,138 @@ const post = (path, body) =>
     body: JSON.stringify(body || {}),
   });
 
-const pct = (v) => (v === null || v === undefined ? '—' : Math.round(v * 100) + '%');
+const pct = (v) => (v == null ? '—' : Math.round(v * 100) + '%');
 const secs = (ms) => (ms ? (ms / 1000).toFixed(0) + 's' : '—');
-const esc = (s) => String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+const gb = (n) => `${n.toFixed(1)} GB`;
+const esc = (s) => String(s ?? '').replace(/[<>&"]/g, (c) =>
+  ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
-// Accuracy -> colour, red through amber to green.
 const accColor = (a) =>
-  a === null || a === undefined ? 'var(--border)'
-    : a < 0.55 ? 'var(--bad)'
-    : a < 0.75 ? 'var(--warn)'
-    : 'var(--good)';
+  a == null ? 'var(--rule)' : a < 0.55 ? 'var(--bad)' : a < 0.75 ? 'var(--warn)' : 'var(--good)';
 
-const state = { view: 'home', session: null, queue: [], idx: 0, answered: null, t0: 0, picked: null };
+/* Inline SVG rather than emoji — emoji render differently on every platform
+ * and read as decoration. */
+const icon = (d, size = 15) =>
+  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"
+     stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const I = {
+  chev: icon('<path d="m9 18 6-6-6-6"/>'),
+  eject: icon('<path d="M5 17h14M12 3 5 13h14L12 3Z"/>', 13),
+  spark: icon('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.9 2.9M15.5 15.5l2.9 2.9M18.4 5.6l-2.9 2.9M8.5 15.5l-2.9 2.9"/>', 13),
+  search: icon('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>', 14),
+};
 
-// ---------------------------------------------------------------- navigation
+const state = {
+  view: 'home', session: null, queue: [], idx: 0, answered: null,
+  t0: 0, setEndsAt: 0, clockHidden: false, eliminated: new Set(),
+  bank: { page: 1, filters: {}, open: null },
+};
 
-document.querySelectorAll('nav button').forEach((b) => {
-  b.onclick = () => show(b.dataset.view);
-});
+// ---------------------------------------------------------------- routing
 
+$$('nav button').forEach((b) => (b.onclick = () => show(b.dataset.view)));
+
+const VIEWS = {};
 function show(view) {
   state.view = view;
-  document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
-  main.className = (view === 'stats' || view === 'analytics') ? 'wide' : '';
-  ({
-    home: renderHome,
-    practice: renderPractice,
-    stats: renderStats,
-    analytics: renderAnalytics,
-    settings: renderSettings,
-  }[view])();
+  $$('nav button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
+  main.className = ['analytics', 'bank'].includes(view) ? 'wide' : '';
+  if (view !== 'practice') stopClock();
+  VIEWS[view]();
 }
 
-// ---------------------------------------------------------------- analytics
+// ---------------------------------------------------------------- tutor chip
 
-async function renderAnalytics() {
-  main.innerHTML = '<div class="empty">Loading…</div>';
-  const a = await api('/api/analytics');
+/* One place reports model state, and it is also the eject control. */
+async function refreshChip() {
+  let rt;
+  try { rt = await api('/api/runtime/status'); } catch { return; }
+  const el = $('#tutorchip');
+  if (!rt.selected) { el.innerHTML = ''; return; }
 
-  if (!a.overview.attempts) {
-    main.innerHTML = `<div class="empty"><p>No attempts yet — analytics need data.</p>
-      <button class="primary" onclick="document.querySelector('[data-view=practice]').click()">Start practising</button></div>`;
-    return;
-  }
+  const loading = ['engine', 'model', 'starting'].includes(rt.phase);
+  const cls = rt.running ? 'live' : loading ? 'loading' : '';
+  const label = rt.running
+    ? `Tutor loaded${rt.idle_seconds != null ? ` · idle ${Math.floor(rt.idle_seconds / 60)}m` : ''}`
+    : loading ? 'Loading…' : 'Tutor ready';
 
-  const targets = [
-    { secs: 71, label: 'R&W target 71s' },
-    { secs: 95, label: 'Math target 95s' },
-  ];
+  el.innerHTML = `<span class="chip ${cls}" title="${rt.running
+    ? 'The model is in memory. It unloads itself after 10 idle minutes.'
+    : 'The model loads the first time you ask a question, and not before.'}">
+      <span class="dot"></span>${esc(label)}
+      ${rt.running ? `<button id="eject" title="Free the GPU now">${I.eject} eject</button>` : ''}
+    </span>`;
 
-  main.innerHTML = `
-    <h3>Accuracy by skill and difficulty</h3>
-    <div class="card">
-      <p class="sub">The finest grain the data allows. A row that is strong on the
-        left and weak on the right is a skill you have, but not yet at exam
-        difficulty — a different fix from one you are missing everywhere.</p>
-      ${CH.heatmap(a.matrix, a.target_accuracy)}
+  const ej = $('#eject');
+  if (ej) ej.onclick = async () => { await post('/api/runtime/eject', {}); refreshChip(); };
+}
+setInterval(() => { if (!document.hidden) refreshChip(); }, 5000);
+
+// ---------------------------------------------------------------- exam clock
+
+/* Countdown for the whole set, budgeted from the real per-question allowance. */
+function startClock(totalSeconds, label) {
+  state.setEndsAt = Date.now() + totalSeconds * 1000;
+  const head = $('#examhead');
+  head.innerHTML = `
+    <div class="examhead">
+      <span class="side">${esc(label)}</span>
+      <span class="clock-wrap">
+        <span class="clock" id="clock">${clock(totalSeconds)}</span>
+        <button class="clock-toggle" id="clocktoggle">Hide</button>
+      </span>
+      <span class="side right" id="qcount"></span>
     </div>
+    <div class="railbar"><i id="rail" style="width:0%"></i></div>`;
 
-    <h3>Accuracy at each difficulty</h3>
-    <div class="card">${CH.difficultyBars(a.difficulty)}</div>
+  $('#clocktoggle').onclick = () => {
+    state.clockHidden = !state.clockHidden;
+    $('#clock').classList.toggle('hidden', state.clockHidden);
+    $('#clocktoggle').textContent = state.clockHidden ? 'Show' : 'Hide';
+  };
+  tickClock();
+  clearInterval(state._clock);
+  state._clock = setInterval(tickClock, 250);
+}
 
-    <h3>Where your time goes</h3>
-    <div class="card">${CH.timeHistogram(a.time_distribution, targets)}</div>
+function tickClock() {
+  const el = $('#clock');
+  if (!el) return clearInterval(state._clock);
+  const left = Math.max(0, (state.setEndsAt - Date.now()) / 1000);
+  el.textContent = clock(left);
+  el.classList.toggle('warn', left <= 300 && left > 60);
+  el.classList.toggle('danger', left <= 60);
+  const q = $('#qcount');
+  if (q) q.textContent = `${Math.min(state.idx + 1, state.queue.length)} of ${state.queue.length}`;
+  const rail = $('#rail');
+  if (rail) rail.style.width = `${(state.idx / Math.max(1, state.queue.length)) * 100}%`;
+}
 
-    <h3>Pace against the real budget</h3>
-    <div class="card">${CH.paceBars(a.difficulty)}</div>
-
-    <h3>Work done</h3>
-    <div class="card">${CH.timeline(a.timeline)}</div>
-
-    <h3>Weakest skills right now</h3>
-    <div class="card">
-      <ul class="plan">
-        ${a.weakest.map((w, i) => `<li>
-          <span class="n">${i + 1}</span>
-          <span><strong>${esc(w.skill)}</strong>
-            <span class="muted">· ${esc(w.reason)} · ${esc(w.test_name)}</span></span>
-          <div class="spacer"></div>
-          <button class="ghost" data-skill="${esc(w.skill)}">Drill</button>
-        </li>`).join('')}
-      </ul>
-    </div>`;
-
-  main.querySelectorAll('[data-skill]').forEach((b) => {
-    b.onclick = () => startSet({ skill: b.dataset.skill, n: 10 });
-  });
+function stopClock() {
+  clearInterval(state._clock);
+  $('#examhead').innerHTML = '';
 }
 
 // ---------------------------------------------------------------- home
 
-/* College Board adds questions in discrete batches, so the control offers the
- * real batches rather than rolling "last N days" windows -- on this bank every
- * window from 30 to 180 days returns the identical set. */
-function vintageSelect(vt) {
-  if (!vt || !vt.vintages.length) return '';
-  const opts = vt.vintages
-    .filter((v) => v.available > 0)
-    .map((v, i) => {
-      const label = i === 0
-        ? `Newest batch (${v.batch}) — ${v.cumulative_available}`
-        : `${v.batch} onward — ${v.cumulative_available}`;
-      return `<option value="${v.starts_at}" ${vt.min_created === v.starts_at ? 'selected' : ''}>${label}</option>`;
-    });
-  return `<select id="pick-vintage" title="Only practise questions added on or after this date">
-      <option value="0" ${!vt.min_created ? 'selected' : ''}>All questions</option>
-      ${opts.join('')}
-    </select>`;
-}
-
-function wireVintage() {
-  const sel = $('#pick-vintage');
-  if (!sel) return;
-  sel.onchange = async () => {
-    await post('/api/vintages', { min_created: Number(sel.value) });
-    renderHome();
-  };
-}
-
-async function renderHome() {
+VIEWS.home = async function renderHome() {
   main.innerHTML = '<div class="empty">Loading…</div>';
   const [ov, plan, vt] = await Promise.all([
     api('/api/state'), api('/api/plan?minutes=30'), api('/api/vintages'),
   ]);
   $('#bankinfo').textContent = `${ov.bank_size.toLocaleString()} questions`;
+  refreshChip();
 
   if (!ov.bank_size) return renderFirstRun();
 
   const proj = Object.entries(ov.projection || {});
   main.innerHTML = `
-    <div class="tiles">
+    <h1 class="serif">Where are you losing points?</h1>
+    <p class="sub">Practice picked by weakness, exam weighting, and what you have already missed.</p>
+
+    <div class="tiles stagger">
       <div class="tile"><div class="k">Answered</div><div class="v">${ov.attempts}</div>
         <div class="n">${ov.correct} correct</div></div>
       <div class="tile"><div class="k">Accuracy</div>
@@ -161,11 +177,12 @@ async function renderHome() {
     <h3>Next 30 minutes</h3>
     <div class="card">
       ${plan.steps.length
-        ? `<ul class="plan">${plan.steps.map((s, i) => `<li><span class="n">${i + 1}</span><span>${esc(s.label)}</span></li>`).join('')}</ul>`
-        : '<p class="muted" style="margin:0">Answer a few questions and a plan will appear here.</p>'}
+        ? `<ul class="plan">${plan.steps.map((s, i) =>
+            `<li><span class="n">${i + 1}</span><span>${esc(s.label)}</span></li>`).join('')}</ul>`
+        : '<p class="muted" style="margin:0">Answer a few questions and a plan appears here.</p>'}
     </div>
 
-    <h3>Start a set</h3>
+    <h3>Timed set</h3>
     <div class="card">
       <div class="row">
         <select id="pick-test">
@@ -179,60 +196,53 @@ async function renderHome() {
           <option value="30">30 questions</option>
         </select>
         ${vintageSelect(vt)}
-        <button class="primary" id="go">Start</button>
+        <button class="primary" id="go">Begin</button>
       </div>
       <p class="sub" style="margin:14px 0 0">
-        Questions are chosen by weakness, exam weighting, and anything you previously missed that is due for review.
+        Runs on a countdown at the real pace — 71s a question in Reading &amp; Writing,
+        95s in Math. For untimed browsing, use the question bank.
       </p>
     </div>`;
 
-  wireVintage();
+  wireVintage(VIEWS.home);
   $('#go').onclick = () => startSet({ test: $('#pick-test').value, n: $('#pick-n').value });
-}
+};
 
-/* First launch: download the question bank from inside the app. */
 async function renderFirstRun() {
   const st = await api('/api/fetch/status');
   const running = st.phase === 'running';
-
   main.innerHTML = `
+    <h1 class="serif">Welcome</h1>
+    <p class="sub">satprep needs the official SAT question bank before you can practise.
+      About 3,250 questions, roughly four minutes, once.</p>
     <div class="card">
-      <h2>Welcome to satprep</h2>
-      <p class="sub">
-        Before you can practise, satprep needs to download the official SAT
-        question bank from College Board. About 3,250 questions, roughly four
-        minutes, done once.
-      </p>
       ${running || st.phase === 'done' ? `
-        <div class="progress" style="margin:16px 0 10px"><div style="width:${st.count ? Math.min(99, (st.count / 3250) * 100) : 4}%"></div></div>
+        <div class="progress" style="margin:4px 0 10px"><div style="width:${st.count ? Math.min(99, (st.count / 3250) * 100) : 4}%"></div></div>
         <p class="sub" style="margin:0">${esc(st.detail || 'Starting…')} — ${st.count.toLocaleString()} stored</p>
       ` : st.phase === 'error' ? `
         <div class="log">${esc(st.error)}</div>
         <button class="primary" id="dl" style="margin-top:12px">Try again</button>
       ` : `
-        <label class="srcrow" style="border:0;padding:8px 0">
+        <label class="srcrow" style="border:0;padding:4px 0 14px">
           <input type="checkbox" id="opensat">
-          <span>Also download the OpenSAT community question bank (~2,340 extra
-            questions, optional — see Settings for what that means)</span>
+          <span>Also fetch the OpenSAT community bank (~2,340 extra questions, optional)</span>
         </label>
         <button class="primary" id="dl">Download questions</button>
       `}
-      <p class="sub" style="margin:16px 0 0">
-        Questions stay on your machine. satprep does not redistribute them —
-        see ATTRIBUTION.md for sources and terms.
-      </p>
+      <p class="sub" style="margin:16px 0 0">Questions stay on your machine. See ATTRIBUTION.md for sources.</p>
     </div>`;
-
   const btn = $('#dl');
   if (btn) btn.onclick = async () => {
     await post('/api/fetch/start', { with_opensat: !!($('#opensat') || {}).checked });
     renderFirstRun();
   };
   if (running) setTimeout(() => { if (state.view === 'home') renderFirstRun(); }, 1200);
-  if (st.phase === 'done') setTimeout(renderHome, 800);
+  if (st.phase === 'done') setTimeout(VIEWS.home, 800);
 }
 
 // ---------------------------------------------------------------- practice
+
+const PACE = { 1: 71, 2: 95 };
 
 async function startSet({ test, n, skill } = {}) {
   const params = new URLSearchParams();
@@ -250,30 +260,31 @@ async function startSet({ test, n, skill } = {}) {
   state.queue = questions;
   state.idx = 0;
   state.session = sess.session_id;
-  renderPractice();
+
+  const budget = questions.reduce((t, q) => t + (PACE[q.test] || 80), 0);
+  startClock(budget, skill ? `Drill · ${skill}` : 'Timed set');
+  VIEWS.practice();
 }
 
-function renderPractice() {
+VIEWS.practice = function renderPractice() {
   if (!state.queue.length) {
     main.innerHTML = `<div class="empty"><p>No set loaded.</p>
-      <button class="primary" onclick="location.reload()">Go home</button></div>`;
+      <button class="primary" onclick="document.querySelector('[data-view=home]').click()">Go home</button></div>`;
     return;
   }
   if (state.idx >= state.queue.length) return renderSetDone();
 
   const q = state.queue[state.idx];
   state.answered = null;
-  state.picked = null;
   state.t0 = Date.now();
+  state.eliminated = new Set();
 
   const isSpr = q.qtype === 'spr';
   main.innerHTML = `
-    <div class="progress"><div style="width:${(state.idx / state.queue.length) * 100}%"></div></div>
     <div class="card">
       <div class="qmeta">
         <span class="tag ${q.difficulty}">${{ E: 'Easy', M: 'Medium', H: 'Hard' }[q.difficulty] || q.difficulty}</span>
         <span>${esc(q.domain)} · <strong>${esc(q.skill)}</strong></span>
-        <span class="timer" id="timer">0:00</span>
       </div>
       ${q.stimulus ? `<div class="stimulus">${q.stimulus}</div>` : ''}
       <div class="stem">${q.stem}</div>
@@ -282,78 +293,70 @@ function renderPractice() {
              <input type="text" id="spr" placeholder="Your answer" autocomplete="off" autofocus>
              <button class="primary" id="submit">Check</button>
            </div>
-           <p class="sub" style="margin:10px 0 0">Grid-in: type a number, e.g. <code>7/2</code> or <code>3.5</code></p>`
+           <p class="sub" style="margin:10px 0 0">Grid-in: a number, e.g. <code>7/2</code> or <code>3.5</code></p>`
         : `<div class="choices">
-             ${q.options.map((o, i) => `
+             ${q.options.map((o) => `
                <button class="choice" data-letter="${o.letter}">
-                 <span class="letter">${o.letter}</span>
-                 <span>${o.content}</span>
+                 <span class="letter">${o.letter}</span><span>${o.content}</span>
                </button>`).join('')}
            </div>`}
       <div id="verdict"></div>
     </div>
     <div class="row">
-      <span class="muted" style="font-size:13px">Question ${state.idx + 1} of ${state.queue.length}</span>
+      <button class="quiet" id="skip">Skip</button>
       <div class="spacer"></div>
-      <span class="muted" style="font-size:12.5px" class="hide-sm">
-        ${isSpr ? '<span class="kbd">Enter</span> check' : '<span class="kbd">A</span>–<span class="kbd">D</span> answer'}
+      <span class="muted hide-sm" style="font-size:12px">
+        ${isSpr ? '<span class="kbd">Enter</span> check'
+                : '<span class="kbd">A</span>–<span class="kbd">D</span> answer · <span class="kbd">Alt</span>+letter to cross out'}
         · <span class="kbd">Enter</span> next
       </span>
     </div>`;
 
-  const target = q.test === 2 ? 95 : 71;
-  clearInterval(state._tick);
-  state._tick = setInterval(() => {
-    const el = $('#timer');
-    if (!el) return clearInterval(state._tick);
-    const s = Math.floor((Date.now() - state.t0) / 1000);
-    el.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-    el.classList.toggle('over', s > target);
-  }, 250);
-
+  tickClock();
   if (isSpr) $('#submit').onclick = () => submit($('#spr').value);
-  else main.querySelectorAll('.choice').forEach((b) => (b.onclick = () => submit(b.dataset.letter)));
+  else $$('.choice').forEach((b) => (b.onclick = (e) => {
+    if (e.altKey) return toggleEliminate(b);
+    submit(b.dataset.letter);
+  }));
+  $('#skip').onclick = next;
+};
+
+/* Crossing out a choice is how people actually work a multiple-choice test. */
+function toggleEliminate(btn) {
+  const l = btn.dataset.letter;
+  state.eliminated.has(l) ? state.eliminated.delete(l) : state.eliminated.add(l);
+  btn.classList.toggle('eliminated', state.eliminated.has(l));
 }
 
 async function submit(response) {
   if (state.answered || !response) return;
-  clearInterval(state._tick);
   const q = state.queue[state.idx];
   const elapsed = Date.now() - state.t0;
-  state.picked = response;
 
   const res = await post('/api/answer', {
-    external_id: q.external_id,
-    response,
-    elapsed_ms: elapsed,
-    session_id: state.session,
+    external_id: q.external_id, response, elapsed_ms: elapsed, session_id: state.session,
   });
   state.answered = res;
 
   const keys = res.correct_answer.map(String);
-  main.querySelectorAll('.choice').forEach((b) => {
+  $$('.choice').forEach((b) => {
     b.disabled = true;
-    const l = b.dataset.letter;
-    if (keys.includes(l)) b.classList.add('correct');
-    else if (l === response) b.classList.add('wrong');
+    if (keys.includes(b.dataset.letter)) b.classList.add('correct');
+    else if (b.dataset.letter === response) b.classList.add('wrong');
   });
   const sprInput = $('#spr');
-  if (sprInput) {
-    sprInput.disabled = true;
-    const btn = $('#submit');
-    if (btn) btn.disabled = true;
-  }
+  if (sprInput) { sprInput.disabled = true; $('#submit').disabled = true; }
 
   $('#verdict').innerHTML = `
     <div class="verdict ${res.correct ? 'good' : 'bad'}">
-      <div class="head">${res.correct ? '✓ Correct' : '✗ Incorrect — answer: ' + keys.join(' or ')}
-        <span class="muted" style="font-weight:400;font-size:13px">· ${secs(elapsed)}</span></div>
+      <div class="head">${res.correct ? 'Correct' : 'Incorrect — answer: ' + keys.join(' or ')}
+        <span class="muted" style="font-weight:400">· ${secs(elapsed)}</span></div>
       ${res.rationale ? `<div class="rationale">${res.rationale}</div>` : ''}
     </div>
-    <div class="row" style="margin-top:16px">
+    <div class="row" style="margin-top:15px">
       <button class="primary" id="next">${state.idx + 1 >= state.queue.length ? 'Finish' : 'Next question'}</button>
-      <button class="ghost" id="ask">Ask the tutor</button>
-      ${!res.correct ? '<span class="muted" style="font-size:13px">Queued for review</span>' : ''}
+      <button class="ghost" id="ask">${I.spark} Ask the tutor</button>
+      ${!res.correct ? '<span class="muted" style="font-size:12.5px">Queued for review</span>' : ''}
     </div>
     <div id="tutor-out"></div>`;
   $('#next').onclick = next;
@@ -361,32 +364,61 @@ async function submit(response) {
   $('#next').focus();
 }
 
-/* Stream a tutor explanation into the feedback panel. The stream is plain
- * text/event-stream, so it renders as it arrives rather than after a long wait
- * — which matters a lot on a local model. */
+function next() { state.idx++; VIEWS.practice(); }
+
+async function renderSetDone() {
+  stopClock();
+  const ov = await api('/api/state');
+  main.innerHTML = `
+    <div class="card" style="text-align:center;padding:40px 24px">
+      <h1 class="serif">Set complete</h1>
+      <p class="sub">${state.queue.length} questions. Overall accuracy now ${pct(ov.accuracy)}.</p>
+      <div class="row" style="justify-content:center">
+        <button class="primary" id="again">Another set</button>
+        <button class="ghost" id="tostats">See what to fix</button>
+      </div>
+    </div>`;
+  $('#again').onclick = () => startSet({ n: 10 });
+  $('#tostats').onclick = () => show('analytics');
+}
+
+// ---------------------------------------------------------------- tutor
+
+/* Models leak markdown and LaTeX no matter how firmly you ask them not to.
+ * The prompt asks for plain text; this cleans up whatever still gets through,
+ * rather than showing the reader raw \( \) and ** markers. */
+function tutorText(raw) {
+  let s = esc(raw);
+  s = s.replace(/\\[()[\]]/g, '');                  // \( \) \[ \]
+  s = s.replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, '($1)/($2)');
+  s = s.replace(/\\(?:times|cdot)\b/g, '×').replace(/\\sqrt/g, 'sqrt');
+  s = s.replace(/\\[a-zA-Z]+/g, '');                 // any other stray command
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|\n)\s*#{1,6}\s*/g, '$1');        // stray headings
+  return s;
+}
+
 async function askTutor(q, response, wasCorrect) {
   const out = $('#tutor-out');
   const btn = $('#ask');
-  if (!out || !btn) return;
+  if (!out) return;
   btn.disabled = true;
-  out.innerHTML = '<div class="tutor"><div class="tutor-head">Tutor</div><div class="tutor-body">…</div></div>';
-  const body = out.querySelector('.tutor-body');
+  out.innerHTML = `<div class="tutor"><div class="tutor-head">Tutor</div>
+    <div class="tutor-body" id="tbody"><span class="caret"></span></div></div>`;
+  const body = $('#tbody');
 
   let res;
   try {
     res = await fetch('/api/tutor/explain', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        external_id: q.external_id,
-        response,
+        external_id: q.external_id, response,
         mode: wasCorrect ? 'explain' : 'why_wrong',
       }),
     });
-  } catch (e) {
+  } catch {
     body.textContent = 'Could not reach the tutor.';
-    btn.disabled = false;
-    return;
+    btn.disabled = false; return;
   }
 
   const reader = res.body.getReader();
@@ -401,125 +433,225 @@ async function askTutor(q, response, wasCorrect) {
     for (const p of parts) {
       const line = p.trim();
       if (!line.startsWith('data:')) continue;
-      let msg;
-      try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
+      let msg; try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
       if (msg.error) {
-        body.innerHTML = `${esc(msg.error)}<br><button class="ghost" style="margin-top:10px"
-          onclick="document.querySelector('[data-view=settings]').click()">Open Settings</button>`;
-        btn.disabled = false;
-        return;
+        body.innerHTML = `${esc(msg.error)}<br>
+          <button class="ghost" style="margin-top:10px"
+            onclick="document.querySelector('[data-view=settings]').click()">Open Settings</button>`;
+        btn.disabled = false; refreshChip(); return;
       }
-      if (msg.delta) { text += msg.delta; body.textContent = text; }
+      // The model loads on first use; say so rather than looking frozen.
+      if (msg.status) { body.innerHTML = `<span class="muted">${esc(msg.status)}</span><span class="caret"></span>`; refreshChip(); }
+      if (msg.delta) {
+        text += msg.delta;
+        body.innerHTML = `${tutorText(text)}<span class="caret"></span>`;
+      }
+      if (msg.done) body.innerHTML = tutorText(text);
     }
   }
   btn.disabled = false;
+  refreshChip();
 }
 
-function next() {
-  state.idx++;
-  renderPractice();
-}
+// ---------------------------------------------------------------- question bank
 
-async function renderSetDone() {
-  clearInterval(state._tick);
-  const ov = await api('/api/state');
+VIEWS.bank = async function renderBank() {
+  const f = state.bank.filters;
+  const params = new URLSearchParams({ page: state.bank.page, per: 20 });
+  for (const [k, v] of Object.entries(f)) if (v) params.set(k, v);
+
+  if (!$('.qlist')) main.innerHTML = '<div class="empty">Loading…</div>';
+  const data = await api('/api/bank?' + params);
+
+  const skills = data.facets.skills;
+  const domains = [...new Set(skills.map((s) => s.domain))];
+
   main.innerHTML = `
-    <div class="card" style="text-align:center;padding:38px">
-      <h2>Set complete</h2>
-      <p class="sub">${state.queue.length} questions done. Overall accuracy now ${pct(ov.accuracy)}.</p>
-      <div class="row" style="justify-content:center">
-        <button class="primary" id="again">Another set</button>
-        <button class="ghost" id="tostats">See what to fix</button>
-      </div>
+    <h1 class="serif">Question bank</h1>
+    <p class="sub">Every question, no clock and no scoring. Look things up, read the
+      official explanation, work at whatever speed suits you.</p>
+
+    <div class="bankbar">
+      <input type="search" id="bq" placeholder="Search question text…" value="${esc(f.q || '')}">
+      <select id="bsec">
+        <option value="">Both sections</option>
+        <option value="1" ${f.test === '1' ? 'selected' : ''}>Reading &amp; Writing</option>
+        <option value="2" ${f.test === '2' ? 'selected' : ''}>Math</option>
+      </select>
+      <select id="bdom">
+        <option value="">All domains</option>
+        ${domains.map((d) => `<option value="${esc(d)}" ${f.domain === d ? 'selected' : ''}>${esc(d)}</option>`).join('')}
+      </select>
+      <select id="bdiff">
+        <option value="">Any difficulty</option>
+        ${[['E', 'Easy'], ['M', 'Medium'], ['H', 'Hard']].map(([v, l]) =>
+          `<option value="${v}" ${f.difficulty === v ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
+      <select id="bsrc">
+        <option value="">All sources</option>
+        ${data.facets.sources.map((s) =>
+          `<option value="${s.source}" ${f.source === s.source ? 'selected' : ''}>${s.source} (${s.n})</option>`).join('')}
+      </select>
+      <select id="bseen">
+        <option value="">Seen or not</option>
+        <option value="unseen" ${f.unseen ? 'selected' : ''}>Not attempted</option>
+        <option value="missed" ${f.missed ? 'selected' : ''}>Previously missed</option>
+      </select>
+    </div>
+
+    <p class="sub">${data.total.toLocaleString()} matching · page ${data.page} of ${data.pages}</p>
+
+    <div class="qlist stagger">
+      ${data.items.map((q, i) => qCard(q, i)).join('') ||
+        '<div class="empty">Nothing matches those filters.</div>'}
+    </div>
+
+    <div class="pager">
+      <button class="ghost" id="prev" ${data.page <= 1 ? 'disabled' : ''}>Previous</button>
+      <span class="at">${data.page} / ${data.pages}</span>
+      <button class="ghost" id="nextp" ${data.page >= data.pages ? 'disabled' : ''}>Next</button>
     </div>`;
-  $('#again').onclick = () => startSet({ n: 10 });
-  $('#tostats').onclick = () => show('stats');
+
+  const setF = (k, v) => { f[k] = v || ''; state.bank.page = 1; VIEWS.bank(); };
+  $('#bsec').onchange = (e) => setF('test', e.target.value);
+  $('#bdom').onchange = (e) => setF('domain', e.target.value);
+  $('#bdiff').onchange = (e) => setF('difficulty', e.target.value);
+  $('#bsrc').onchange = (e) => setF('source', e.target.value);
+  $('#bseen').onchange = (e) => {
+    f.unseen = e.target.value === 'unseen' ? '1' : '';
+    f.missed = e.target.value === 'missed' ? '1' : '';
+    state.bank.page = 1; VIEWS.bank();
+  };
+
+  let deb;
+  const search = $('#bq');
+  search.oninput = (e) => {
+    clearTimeout(deb);
+    deb = setTimeout(() => setF('q', e.target.value.trim()), 320);
+  };
+
+  $('#prev').onclick = () => { state.bank.page--; VIEWS.bank(); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  $('#nextp').onclick = () => { state.bank.page++; VIEWS.bank(); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+
+  $$('.qcard-head').forEach((h) => (h.onclick = () => h.closest('.qcard').classList.toggle('open')));
+  $$('[data-reveal]').forEach((b) => (b.onclick = () => {
+    $(`#ans-${b.dataset.reveal}`).style.display = 'block';
+    b.remove();
+  }));
+};
+
+function qCard(q, i) {
+  const plain = (q.stem || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const id = q.external_id.replace(/[^a-z0-9]/gi, '');
+  const status = q.attempts
+    ? `<span class="pill ${q.correct === q.attempts ? 'ok' : ''}">${q.correct}/${q.attempts}</span>`
+    : '';
+  return `
+    <div class="qcard">
+      <button class="qcard-head">
+        <span class="chev">${I.chev}</span>
+        <span class="tag ${q.difficulty}">${q.difficulty}</span>
+        <span class="txt">${esc(plain).slice(0, 150) || '(figure-based question)'}</span>
+        <span class="muted hide-sm" style="font-size:11.5px">${esc(q.skill)}</span>
+        ${status}
+      </button>
+      <div class="qcard-body"><div><div class="qcard-inner">
+        ${q.stimulus ? `<div class="stimulus">${q.stimulus}</div>` : ''}
+        <div class="stem">${q.stem}</div>
+        ${q.options.length ? `<div class="choices">${q.options.map((o) => `
+          <div class="choice" style="cursor:default">
+            <span class="letter">${o.letter}</span><span>${o.content}</span>
+          </div>`).join('')}</div>` : ''}
+        <button class="ghost" style="margin-top:14px" data-reveal="${id}">Show answer</button>
+        <div id="ans-${id}" style="display:none">
+          <div class="verdict good" style="margin-top:14px">
+            <div class="head">Answer: ${esc(q.correct_answer.join(' or '))}</div>
+            ${q.rationale ? `<div class="rationale">${q.rationale}</div>` : ''}
+          </div>
+        </div>
+      </div></div></div>
+    </div>`;
 }
 
-// ---------------------------------------------------------------- stats
+// ---------------------------------------------------------------- analytics
 
-async function renderStats() {
+VIEWS.analytics = async function renderAnalytics() {
   main.innerHTML = '<div class="empty">Loading…</div>';
-  const s = await api('/api/stats');
+  const a = await api('/api/analytics');
 
-  if (!s.overview.attempts) {
-    main.innerHTML = `<div class="empty"><p>No attempts yet.</p>
-      <button class="primary" onclick="document.querySelector('[data-view=practice]').click()">Start practising</button></div>`;
+  if (!a.overview.attempts) {
+    main.innerHTML = `<div class="empty"><p>Analytics need data.</p>
+      <button class="primary" onclick="document.querySelector('[data-view=home]').click()">Start practising</button></div>`;
     return;
   }
-
-  const rows = s.by_type.map((d) => {
-    const skills = d.skills.map((k) => {
-      const paceBad = k.pace_ratio && k.pace_ratio > 1.25;
-      return `<tr>
-        <td class="skillname">${esc(k.skill)}
-          ${k.attempts === 0 ? '<span class="pill untested">untested</span>' : ''}
-          ${paceBad ? '<span class="pill slow">slow</span>' : ''}</td>
-        <td class="num">${k.attempts ? k.correct + '/' + k.attempts : '—'}</td>
-        <td class="num" style="color:${accColor(k.accuracy)}">${pct(k.accuracy)}</td>
-        <td style="width:90px">${k.attempts
-          ? `<div class="bar"><div style="width:${(k.accuracy * 100).toFixed(0)}%;background:${accColor(k.accuracy)}"></div></div>`
-          : ''}</td>
-        <td class="num">${secs(k.avg_ms)}</td>
-        <td class="num muted hide-sm">${secs(k.pace_target_ms)}</td>
-      </tr>`;
-    }).join('');
-
-    return `<tr class="domain">
-        <td>${esc(d.domain)} <span class="muted" style="font-weight:400">· ${esc(d.test_name)}${d.exam_share ? ' · ' + Math.round(d.exam_share * 100) + '% of section' : ''}</span></td>
-        <td class="num">${d.correct}/${d.attempts}</td>
-        <td class="num" style="color:${accColor(d.accuracy)}">${pct(d.accuracy)}</td>
-        <td></td><td class="num">${secs(d.avg_ms)}</td><td class="hide-sm"></td>
-      </tr>${skills}`;
-  }).join('');
-
-  const trend = s.trend.length > 1
-    ? `<h3>Recent trend</h3><div class="card">
-         <div class="spark">${s.trend.map((t) => `<div style="height:${Math.max(4, t.accuracy * 100)}%" title="${pct(t.accuracy)} of ${t.n}"></div>`).join('')}</div>
-         <p class="sub" style="margin:12px 0 0">Accuracy in blocks of recent questions, oldest on the left.</p>
-       </div>` : '';
+  const targets = [{ secs: 71, label: 'R&W 71s' }, { secs: 95, label: 'Math 95s' }];
 
   main.innerHTML = `
-    <h3>Drill these next</h3>
+    <h1 class="serif">Analytics</h1>
+    <p class="sub">Accuracy and pace at the finest grain the data allows.</p>
+
+    <h3>Accuracy by skill and difficulty</h3>
     <div class="card">
-      <ul class="plan">
-        ${s.weakest.map((w, i) => `<li>
-          <span class="n">${i + 1}</span>
-          <span><strong>${esc(w.skill)}</strong>
-            <span class="muted">· ${esc(w.reason)} · ${esc(w.test_name)}</span></span>
-          <div class="spacer"></div>
-          <button class="ghost" data-skill="${esc(w.skill)}">Drill</button>
-        </li>`).join('')}
-      </ul>
+      <p class="sub">A row that is strong on the left and weak on the right is a skill you
+        have, but not yet at exam difficulty — a different fix from missing it everywhere.</p>
+      ${CH.heatmap(a.matrix, a.target_accuracy)}
     </div>
-    ${trend}
-    <h3>By question type</h3>
-    <div class="card" style="padding:6px 10px">
-      <table>
-        <thead><tr>
-          <th>Domain / skill</th><th style="text-align:right">Score</th>
-          <th style="text-align:right">Accuracy</th><th></th>
-          <th style="text-align:right">Your pace</th><th style="text-align:right" class="hide-sm">Target</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
+
+    <h3>Accuracy at each difficulty</h3>
+    <div class="card">${CH.difficultyBars(a.difficulty)}</div>
+
+    <h3>Where your time goes</h3>
+    <div class="card">${CH.timeHistogram(a.time_distribution, targets)}</div>
+
+    <h3>Pace against the real budget</h3>
+    <div class="card">${CH.paceBars(a.difficulty)}</div>
+
+    <h3>Work done</h3>
+    <div class="card">${CH.timeline(a.timeline)}</div>
+
+    <h3>Weakest skills</h3>
+    <div class="card">
+      <ul class="plan">${a.weakest.map((w, i) => `<li>
+        <span class="n">${i + 1}</span>
+        <span><strong>${esc(w.skill)}</strong>
+          <span class="muted">· ${esc(w.reason)} · ${esc(w.test_name)}</span></span>
+        <div class="spacer"></div>
+        <button class="ghost" data-skill="${esc(w.skill)}">Drill</button>
+      </li>`).join('')}</ul>
     </div>`;
 
-  main.querySelectorAll('[data-skill]').forEach((b) => {
-    b.onclick = () => startSet({ skill: b.dataset.skill, n: 10 });
-  });
+  $$('[data-skill]').forEach((b) => (b.onclick = () => startSet({ skill: b.dataset.skill, n: 10 })));
+};
+
+// ---------------------------------------------------------------- vintage
+
+function vintageSelect(vt) {
+  if (!vt || !vt.vintages || !vt.vintages.length) return '';
+  const opts = vt.vintages.filter((v) => v.available > 0).map((v, i) =>
+    `<option value="${v.starts_at}" ${vt.min_created === v.starts_at ? 'selected' : ''}>${
+      i === 0 ? `Newest (${v.batch}) — ${v.cumulative_available}`
+              : `${v.batch} onward — ${v.cumulative_available}`}</option>`);
+  return `<select id="pick-vintage" title="Only questions added on or after this date">
+      <option value="0" ${!vt.min_created ? 'selected' : ''}>All vintages</option>
+      ${opts.join('')}
+    </select>`;
+}
+
+function wireVintage(after) {
+  const sel = $('#pick-vintage');
+  if (!sel) return;
+  sel.onchange = async () => {
+    await post('/api/vintages', { min_created: Number(sel.value) });
+    after();
+  };
 }
 
 // ---------------------------------------------------------------- settings
 
-const gb = (n) => `${n.toFixed(n < 1 ? 1 : 1)} GB`;
-
-async function renderSettings() {
-  main.innerHTML = '<div class="empty">Loading…</div>';
+VIEWS.settings = async function renderSettings() {
+  if (!$('.models')) main.innerHTML = '<div class="empty">Loading…</div>';
   const [rt, tc, src] = await Promise.all([
-    api('/api/runtime/status'),
-    api('/api/tutor/config'),
-    api('/api/sources'),
+    api('/api/runtime/status'), api('/api/tutor/config'), api('/api/sources'),
   ]);
 
   const installed = new Set(rt.installed_models);
@@ -529,80 +661,81 @@ async function renderSettings() {
   const fitOf = (m) =>
     vram == null ? '' :
     m.vram_gb <= vram - 1 ? '<span class="pill fit">fits your GPU</span>' :
-    m.vram_gb <= vram + 0.5 ? '<span class="pill tight">tight fit</span>' :
+    m.vram_gb <= vram + 0.5 ? '<span class="pill tight">tight</span>' :
     '<span class="pill toobig">needs more VRAM</span>';
 
-  const cards = rt.models.map((m) => `
-    <div class="model ${m.recommended ? 'rec' : ''}">
-      <div class="model-head">
-        <div>
-          <strong>${esc(m.name)}</strong>
-          ${m.recommended ? '<span class="pill rec">recommended</span>' : ''}
-          ${installed.has(m.id) ? '<span class="pill ok">downloaded</span>' : ''}
-          ${fitOf(m)}
-        </div>
-        <div class="muted" style="font-size:12.5px">
-          ${m.params} · ${gb(m.size_gb)} download · ${esc(m.best_for)} · ${esc(m.licence)}
-        </div>
-      </div>
-      <div class="model-body">
-        <ul class="pros">${m.pros.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>
-        <ul class="cons">${m.cons.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>
-      </div>
-      <div class="row">
-        <button class="primary" data-start="${m.id}" ${busy ? 'disabled' : ''}>
-          ${installed.has(m.id) ? 'Use this model' : `Download & use (${gb(m.size_gb)})`}
-        </button>
-        ${installed.has(m.id) ? `<button class="ghost" data-del="${m.id}" ${busy ? 'disabled' : ''}>Delete</button>` : ''}
-      </div>
-    </div>`).join('');
-
-  const progress = busy || rt.phase === 'error' || rt.running ? `
-    <div class="card ${rt.phase === 'error' ? 'err' : ''}">
-      ${rt.phase === 'error'
-        ? `<strong>Setup failed</strong><pre class="log">${esc(rt.error)}</pre>`
-        : rt.running
-          ? `<strong>Tutor is running</strong>
-             <p class="sub" style="margin:6px 0 12px">${esc(rt.detail || 'Ready.')}</p>
-             <button class="ghost" id="stop-rt">Stop model</button>`
-          : `<strong>${esc(rt.detail || 'Working…')}</strong>
-             <div class="progress" style="margin:12px 0 0">
-               <div style="width:${(rt.progress * 100).toFixed(1)}%"></div>
-             </div>
-             <p class="sub" style="margin:8px 0 0">${Math.round(rt.progress * 100)}% — you can keep practising while this downloads.</p>`}
-    </div>` : '';
-
   main.innerHTML = `
+    <h1 class="serif">Settings</h1>
+
     <h3>AI tutor</h3>
     <div class="card">
       <p class="sub" style="margin:0 0 6px">
-        Optional. Everything else works without it. Pick a model and satprep
-        downloads the engine and the model for you — nothing to install, no
-        terminal, no accounts.
+        Optional — everything else works without it. Pick a model and satprep fetches
+        the engine and the weights itself. Nothing to install, no terminal, no account.
       </p>
       <p class="sub" style="margin:0">
-        Detected: <strong>${esc(rt.accelerator.label)}</strong>${vram ? ` · ${vram} GB VRAM` : ''}
-        · files go to <code>${esc(rt.data_dir)}</code>
+        The model is <strong>not</strong> kept in memory: it loads the first time you ask a
+        question and unloads after ten idle minutes, so it is not sitting on your GPU
+        while you read. Eject it any time from the header.
+      </p>
+      <p class="sub" style="margin:10px 0 0">
+        Detected <strong>${esc(rt.accelerator.label)}</strong>${vram ? ` · ${vram} GB VRAM` : ''}
+        · files in <code>${esc(rt.data_dir)}</code>
       </p>
     </div>
-    ${progress}
-    <div class="models">${cards}</div>
 
-    <h3>Already use Ollama, LM Studio, or a hosted API?</h3>
+    ${rt.phase === 'error' ? `<div class="card" style="border-color:var(--bad)">
+      <strong>Setup failed</strong><div class="log">${esc(rt.error)}</div></div>` : ''}
+
+    <div class="models stagger">
+      ${rt.models.map((m) => {
+        const has = installed.has(m.id);
+        const isSel = rt.selected === m.id;
+        const thisBusy = busy && rt.model_id === m.id;
+        return `
+        <div class="model ${m.recommended ? 'rec' : ''} ${isSel ? 'active' : ''}">
+          <div class="model-head">
+            <div><strong>${esc(m.name)}</strong>
+              ${m.recommended ? '<span class="pill rec">recommended</span>' : ''}
+              ${isSel ? '<span class="pill ok">in use</span>' : has ? '<span class="pill">downloaded</span>' : ''}
+              ${fitOf(m)}
+            </div>
+            <div class="muted" style="font-size:12px;margin-top:3px">
+              ${m.params} · ${gb(m.size_gb)} · ${esc(m.best_for)} · ${esc(m.licence)}
+            </div>
+          </div>
+          <div class="model-body">
+            <ul class="pros">${m.pros.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>
+            <ul class="cons">${m.cons.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>
+          </div>
+          <div class="row">
+            <button class="primary dl" data-start="${m.id}" data-busy="${thisBusy ? 1 : 0}"
+              ${busy ? 'disabled' : ''}>
+              <span class="fill" style="width:${thisBusy ? (rt.progress * 100).toFixed(1) : 0}%"></span>
+              <span class="lbl">${thisBusy
+                ? `<span class="spin"></span>${esc(rt.detail || 'Working…')}`
+                : has ? 'Use this model' : `Download &amp; use · ${gb(m.size_gb)}`}</span>
+            </button>
+            ${has && !isSel ? `<button class="ghost" data-del="${m.id}" ${busy ? 'disabled' : ''}>Delete</button>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <h3>Already run Ollama, LM Studio, or a hosted API?</h3>
     <div class="card">
-      <p class="sub">Skip the download and point satprep at what you have.</p>
+      <p class="sub">Point satprep at it instead of downloading anything.</p>
       <div class="row">
         <select id="prov">
           ${tc.providers.map((p) => `<option value="${p.id}" ${tc.config.provider === p.id ? 'selected' : ''}>
-            ${esc(p.name)}${p.kind === 'external' ? ' (external — data leaves your machine)' : ''}
-          </option>`).join('')}
+            ${esc(p.name)}${p.kind === 'external' ? ' — external' : ''}</option>`).join('')}
         </select>
         <input type="text" id="model" placeholder="model name" value="${esc(tc.config.model || '')}">
       </div>
-      <div class="row" style="margin-top:10px">
-        <input type="text" id="baseurl" placeholder="base URL (blank = provider default)"
+      <div class="row" style="margin-top:9px">
+        <input type="text" id="baseurl" placeholder="base URL (blank = default)"
                value="${esc(tc.config.base_url || '')}" style="flex:2">
-        <input type="text" id="apikey" placeholder="${tc.config.has_key ? 'API key saved — leave blank to keep' : 'API key (external only)'}" style="flex:1">
+        <input type="text" id="apikey" placeholder="${tc.config.has_key ? 'key saved — blank keeps it' : 'API key (external only)'}" style="flex:1">
       </div>
       <div class="row" style="margin-top:12px">
         <button class="primary" id="save-tutor">Save</button>
@@ -610,38 +743,25 @@ async function renderSettings() {
         <span id="tutor-result" class="muted" style="font-size:13px"></span>
       </div>
       <p class="sub" style="margin:12px 0 0">
-        API keys are stored in <code>~/.config/satprep/config.json</code> with
-        owner-only permissions, never in the database and never in the repo.
+        Keys live in <code>~/.config/satprep/config.json</code>, owner-only, never in the database or the repo.
       </p>
     </div>
 
     <h3>Question vintage</h3>
     <div class="card">
-      <p class="sub">
-        College Board keeps adding to the bank, in batches rather than a trickle.
-        The newest batch is the closest thing available to what the current exam
-        looks like — useful when your test is weeks away. Restricting to it
-        naturally means fewer questions.
-      </p>
+      <p class="sub">College Board adds questions in batches. The newest batch is the closest
+        thing to what the current exam looks like.</p>
       <div class="row" style="margin-bottom:14px">
         ${vintageSelect({ vintages: src.vintages, min_created: src.min_created })}
       </div>
       <table>
-        <thead><tr><th>Added</th><th style="text-align:right">Questions</th>
-          <th style="text-align:right">Available to drill</th>
-          <th style="text-align:right">Total if you cut off here</th></tr></thead>
+        <thead><tr><th>Added</th><th class="num">Questions</th>
+          <th class="num">Available</th><th class="num">Total if cut off here</th></tr></thead>
         <tbody>${src.vintages.map((v) => `<tr>
-          <td>${esc(v.batch)}</td>
-          <td class="num">${v.total}</td>
-          <td class="num">${v.available}${v.available === 0 ? ' <span class="muted">(all reserved)</span>' : ''}</td>
-          <td class="num">${v.cumulative_available}</td>
-        </tr>`).join('')}</tbody>
+          <td>${esc(v.batch)}</td><td class="num">${v.total}</td>
+          <td class="num">${v.available}${v.available === 0 ? ' <span class="muted">(reserved)</span>' : ''}</td>
+          <td class="num">${v.cumulative_available}</td></tr>`).join('')}</tbody>
       </table>
-      <p class="sub" style="margin:14px 0 0">
-        "Available to drill" excludes questions reserved because they also appear
-        in official full-length practice tests. Community questions carry no
-        dates, so they are excluded whenever a cutoff is set.
-      </p>
     </div>
 
     <h3>Question sources</h3>
@@ -649,51 +769,35 @@ async function renderSettings() {
       ${src.sources.map((s) => `
         <label class="srcrow">
           <input type="checkbox" data-src="${s.source}" ${s.enabled ? 'checked' : ''}>
-          <span>
-            <strong>${esc(s.name)}</strong>
+          <span><strong>${esc(s.name)}</strong>
             <span class="pill ${s.official ? 'ok' : ''}">${s.official ? 'official' : 'community'}</span>
             <span class="muted"> · ${s.bank.toLocaleString()} questions</span><br>
-            <span class="muted" style="font-size:12.5px">${esc((src.catalog.find((c) => c.id === s.source) || {}).why || '')}</span><br>
-            <a href="${esc(s.url)}" target="_blank" rel="noreferrer noopener" class="muted" style="font-size:12px">${esc(s.url)}</a>
+            <span class="muted" style="font-size:12px">${esc((src.catalog.find((c) => c.id === s.source) || {}).why || '')}</span><br>
+            <a href="${esc(s.url)}" target="_blank" rel="noreferrer noopener" style="font-size:11.5px">${esc(s.url)}</a>
           </span>
         </label>`).join('')}
       ${src.not_fetched.map((n) => `
-        <div class="srcrow off">
-          <span style="width:16px"></span>
-          <span>
-            <strong>${esc(n.name)}</strong> <span class="pill">not fetched, by design</span><br>
-            <span class="muted" style="font-size:12.5px">${esc(n.reason)}</span><br>
-            <span class="muted" style="font-size:12.5px">${esc(n.status)}</span>
-          </span>
-        </div>`).join('')}
+        <div class="srcrow off"><span style="width:16px"></span>
+          <span><strong>${esc(n.name)}</strong> <span class="pill">not fetched, by design</span><br>
+            <span class="muted" style="font-size:12px">${esc(n.reason)}</span><br>
+            <span class="muted" style="font-size:12px">${esc(n.status)}</span>
+          </span></div>`).join('')}
     </div>`;
 
-  wireVintage();
-  const vsel = $('#pick-vintage');
-  if (vsel) vsel.onchange = async () => {
-    await post('/api/vintages', { min_created: Number(vsel.value) });
-    renderSettings();
-  };
-
-  main.querySelectorAll('[data-start]').forEach((b) => {
-    b.onclick = async () => {
-      await post('/api/runtime/start', { model_id: b.dataset.start });
-      pollRuntime();
-    };
-  });
-  main.querySelectorAll('[data-del]').forEach((b) => {
-    b.onclick = async () => { await post('/api/runtime/delete', { model_id: b.dataset.del }); renderSettings(); };
-  });
-  const stopBtn = $('#stop-rt');
-  if (stopBtn) stopBtn.onclick = async () => { await post('/api/runtime/stop', {}); renderSettings(); };
+  wireVintage(VIEWS.settings);
+  $$('[data-start]').forEach((b) => (b.onclick = async () => {
+    await post('/api/runtime/start', { model_id: b.dataset.start });
+    pollRuntime();
+  }));
+  $$('[data-del]').forEach((b) => (b.onclick = async () => {
+    await post('/api/runtime/delete', { model_id: b.dataset.del });
+    VIEWS.settings();
+  }));
 
   $('#save-tutor').onclick = async () => {
     await post('/api/tutor/config', {
-      enabled: true,
-      provider: $('#prov').value,
-      model: $('#model').value.trim(),
-      base_url: $('#baseurl').value.trim(),
-      api_key: $('#apikey').value.trim(),
+      enabled: true, provider: $('#prov').value, model: $('#model').value.trim(),
+      base_url: $('#baseurl').value.trim(), api_key: $('#apikey').value.trim(),
     });
     $('#tutor-result').textContent = 'Saved.';
   };
@@ -701,39 +805,41 @@ async function renderSettings() {
     $('#tutor-result').textContent = 'Testing…';
     const h = await api('/api/tutor/health');
     $('#tutor-result').textContent = h.ok
-      ? `Connected. ${h.models.length} model(s) available.${h.warning ? ' ' + h.warning : ''}`
-      : `Failed: ${h.error}`;
+      ? `Connected · ${h.models.length} model(s).` : `Failed: ${h.error}`;
   };
-  main.querySelectorAll('[data-src]').forEach((cb) => {
-    cb.onchange = async () => {
-      const enabled = [...main.querySelectorAll('[data-src]')].filter((x) => x.checked).map((x) => x.dataset.src);
-      const res = await fetch('/api/sources', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      }).then((r) => r.json());
-      if (res.error) { alert(res.error); cb.checked = true; }
-    };
-  });
+  $$('[data-src]').forEach((cb) => (cb.onchange = async () => {
+    const enabled = $$('[data-src]').filter((x) => x.checked).map((x) => x.dataset.src);
+    const res = await fetch('/api/sources', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }).then((r) => r.json());
+    if (res.error) { alert(res.error); cb.checked = true; }
+  }));
 
   if (busy) pollRuntime();
-}
+};
 
+/* Progress lives in exactly one element — the button's own fill and label — so
+ * the bar and the number cannot disagree with each other. */
 let rtTimer = null;
 function pollRuntime() {
   clearTimeout(rtTimer);
   rtTimer = setTimeout(async () => {
     if (state.view !== 'settings') return;
     const rt = await api('/api/runtime/status');
-    if (['engine', 'model', 'starting'].includes(rt.phase)) {
-      const bar = main.querySelector('.progress > div');
-      const label = main.querySelector('.card strong');
-      if (bar) bar.style.width = (rt.progress * 100).toFixed(1) + '%';
-      if (label && rt.detail) label.textContent = rt.detail;
+    const busy = ['engine', 'model', 'starting'].includes(rt.phase);
+    const btn = $(`[data-start="${rt.model_id}"]`);
+    if (busy && btn) {
+      btn.dataset.busy = '1';
+      btn.querySelector('.fill').style.width = `${(rt.progress * 100).toFixed(1)}%`;
+      btn.querySelector('.lbl').innerHTML =
+        `<span class="spin"></span>${esc(rt.detail || 'Working…')}`;
       pollRuntime();
     } else {
-      renderSettings();
+      VIEWS.settings();
+      refreshChip();
     }
-  }, 900);
+  }, 700);
 }
 
 // ---------------------------------------------------------------- keyboard
@@ -751,10 +857,13 @@ document.addEventListener('keydown', (e) => {
 
   const k = e.key.toUpperCase();
   const letter = 'ABCD'.includes(k) ? k : '1234'.includes(k) ? 'ABCD'['1234'.indexOf(k)] : null;
-  if (letter && main.querySelector(`.choice[data-letter="${letter}"]`)) {
-    e.preventDefault();
-    submit(letter);
-  }
+  if (!letter) return;
+  const btn = main.querySelector(`.choice[data-letter="${letter}"]`);
+  if (!btn) return;
+  e.preventDefault();
+  if (e.altKey) toggleEliminate(btn);
+  else submit(letter);
 });
 
 show('home');
+refreshChip();

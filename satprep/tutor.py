@@ -379,8 +379,13 @@ def _messages_for(question, detail, user_response, mode):
         "is correct.\n\n"
         "Your job is to make the student able to solve the NEXT question like "
         "this one, not to restate the official explanation. Be concise and "
-        "concrete. Use plain text, no markdown headers. Keep it under 200 words "
-        "unless asked for more."
+        "concrete. Keep it under 200 words unless asked for more.\n\n"
+        "Formatting rules, which matter because your reply is shown as plain "
+        "text in a study app:\n"
+        "- No markdown. No **asterisks**, no ##headings, no bullet syntax.\n"
+        "- No LaTeX. Never write \\( \\), \\[ \\], $...$ or \\frac. Write maths "
+        "the way you would type it in a message: y = 15w^2, (x+3)/2, sqrt(5).\n"
+        "- Write in short paragraphs separated by a blank line."
     )
 
     if mode == "why_wrong" and user_response:
