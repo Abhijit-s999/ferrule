@@ -240,8 +240,11 @@ class Runtime:
         self.proc = None
         self.port = None
         self.model_id = None
+        self.selected = None
+        self.last_used = None
         self.state = {
-            "phase": "idle",          # idle|engine|model|starting|ready|error
+            # idle | engine | model | ready-to-load | starting | ready | error
+            "phase": "idle",
             "progress": 0.0,
             "detail": "",
             "error": "",
@@ -253,9 +256,13 @@ class Runtime:
     def status(self):
         acc = detect_accelerator()
         alive = bool(self.proc and self.proc.poll() is None)
+        selected = self.selected or tutor.load_config().get("selected_model")
         return {
             **self.state,
             "running": alive,
+            "selected": selected,
+            "loaded_model": self.model_id if alive else None,
+            "idle_seconds": int(time.time() - self.last_used) if (alive and self.last_used) else None,
             "port": self.port if alive else None,
             "engine_installed": bool(find_server_binary()),
             "installed_models": sorted(installed_models()),
@@ -472,6 +479,79 @@ class Runtime:
         self._set(phase="engine", progress=0.0, detail="Preparing…", error="",
                   model_id=model_id)
         threading.Thread(target=run, daemon=True).start()
+
+    # ---- lazy loading -----------------------------------------------------
+    #
+    # A 5 GB model resident in VRAM the entire time you are reading a passage
+    # is rude on a modest machine. So downloading a model only *selects* it;
+    # it is loaded on the first tutor question and evicted once you stop asking.
+
+    def select(self, model_id):
+        """Download if needed and remember the choice, without loading it."""
+        if not model_by_id(model_id):
+            raise RuntimeError(f"Unknown model {model_id}")
+        self.install_engine()
+        self.download_model(model_id)
+        self.selected = model_id
+        tutor.save_config({"enabled": True, "selected_model": model_id})
+        self._set(phase="ready-to-load", progress=1.0,
+                  detail="Ready. Loads when you first ask the tutor.",
+                  error="", model_id=model_id)
+        return model_id
+
+    def select_async(self, model_id):
+        def run():
+            try:
+                self.select(model_id)
+            except Exception as e:
+                self._set(phase="error", error=str(e), detail="", progress=0.0)
+
+        self._set(phase="engine", progress=0.0, detail="Preparing…", error="",
+                  model_id=model_id)
+        threading.Thread(target=run, daemon=True).start()
+
+    def ensure_running(self, on_status=None):
+        """Load the selected model if it is not already resident.
+
+        Blocking, and safe to call concurrently: the lock means a second
+        question asked while the model is still loading waits rather than
+        starting a second server.
+        """
+        selected = self.selected or tutor.load_config().get("selected_model")
+        if not selected:
+            raise RuntimeError(
+                "No model chosen yet. Pick one in Settings."
+            )
+        if self.proc and self.proc.poll() is None:
+            self.touch()
+            return True
+
+        if on_status:
+            on_status(f"Loading {model_by_id(selected)['name']}…")
+        self.start(selected)
+        self.touch()
+        return True
+
+    def touch(self):
+        """Mark the model as just used, deferring the idle eviction."""
+        self.last_used = time.time()
+
+    def start_idle_watch(self, idle_seconds=600):
+        """Evict the model after a stretch with no tutor questions."""
+        def loop():
+            while True:
+                time.sleep(20)
+                if (
+                    self.proc
+                    and self.proc.poll() is None
+                    and self.last_used
+                    and time.time() - self.last_used > idle_seconds
+                ):
+                    self.stop()
+                    self._set(phase="ready-to-load", detail="Unloaded after idle.",
+                              progress=1.0)
+
+        threading.Thread(target=loop, daemon=True).start()
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
