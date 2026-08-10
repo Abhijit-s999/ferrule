@@ -106,9 +106,39 @@ async function renderAnalytics() {
 
 // ---------------------------------------------------------------- home
 
+/* College Board adds questions in discrete batches, so the control offers the
+ * real batches rather than rolling "last N days" windows -- on this bank every
+ * window from 30 to 180 days returns the identical set. */
+function vintageSelect(vt) {
+  if (!vt || !vt.vintages.length) return '';
+  const opts = vt.vintages
+    .filter((v) => v.available > 0)
+    .map((v, i) => {
+      const label = i === 0
+        ? `Newest batch (${v.batch}) — ${v.cumulative_available}`
+        : `${v.batch} onward — ${v.cumulative_available}`;
+      return `<option value="${v.starts_at}" ${vt.min_created === v.starts_at ? 'selected' : ''}>${label}</option>`;
+    });
+  return `<select id="pick-vintage" title="Only practise questions added on or after this date">
+      <option value="0" ${!vt.min_created ? 'selected' : ''}>All questions</option>
+      ${opts.join('')}
+    </select>`;
+}
+
+function wireVintage() {
+  const sel = $('#pick-vintage');
+  if (!sel) return;
+  sel.onchange = async () => {
+    await post('/api/vintages', { min_created: Number(sel.value) });
+    renderHome();
+  };
+}
+
 async function renderHome() {
   main.innerHTML = '<div class="empty">Loading…</div>';
-  const [ov, plan] = await Promise.all([api('/api/state'), api('/api/plan?minutes=30')]);
+  const [ov, plan, vt] = await Promise.all([
+    api('/api/state'), api('/api/plan?minutes=30'), api('/api/vintages'),
+  ]);
   $('#bankinfo').textContent = `${ov.bank_size.toLocaleString()} questions`;
 
   if (!ov.bank_size) return renderFirstRun();
@@ -148,6 +178,7 @@ async function renderHome() {
           <option value="20">20 questions</option>
           <option value="30">30 questions</option>
         </select>
+        ${vintageSelect(vt)}
         <button class="primary" id="go">Start</button>
       </div>
       <p class="sub" style="margin:14px 0 0">
@@ -155,6 +186,7 @@ async function renderHome() {
       </p>
     </div>`;
 
+  wireVintage();
   $('#go').onclick = () => startSet({ test: $('#pick-test').value, n: $('#pick-n').value });
 }
 
@@ -583,6 +615,35 @@ async function renderSettings() {
       </p>
     </div>
 
+    <h3>Question vintage</h3>
+    <div class="card">
+      <p class="sub">
+        College Board keeps adding to the bank, in batches rather than a trickle.
+        The newest batch is the closest thing available to what the current exam
+        looks like — useful when your test is weeks away. Restricting to it
+        naturally means fewer questions.
+      </p>
+      <div class="row" style="margin-bottom:14px">
+        ${vintageSelect({ vintages: src.vintages, min_created: src.min_created })}
+      </div>
+      <table>
+        <thead><tr><th>Added</th><th style="text-align:right">Questions</th>
+          <th style="text-align:right">Available to drill</th>
+          <th style="text-align:right">Total if you cut off here</th></tr></thead>
+        <tbody>${src.vintages.map((v) => `<tr>
+          <td>${esc(v.batch)}</td>
+          <td class="num">${v.total}</td>
+          <td class="num">${v.available}${v.available === 0 ? ' <span class="muted">(all reserved)</span>' : ''}</td>
+          <td class="num">${v.cumulative_available}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <p class="sub" style="margin:14px 0 0">
+        "Available to drill" excludes questions reserved because they also appear
+        in official full-length practice tests. Community questions carry no
+        dates, so they are excluded whenever a cutoff is set.
+      </p>
+    </div>
+
     <h3>Question sources</h3>
     <div class="card">
       ${src.sources.map((s) => `
@@ -606,6 +667,13 @@ async function renderSettings() {
           </span>
         </div>`).join('')}
     </div>`;
+
+  wireVintage();
+  const vsel = $('#pick-vintage');
+  if (vsel) vsel.onchange = async () => {
+    await post('/api/vintages', { min_created: Number(vsel.value) });
+    renderSettings();
+  };
 
   main.querySelectorAll('[data-start]').forEach((b) => {
     b.onclick = async () => {

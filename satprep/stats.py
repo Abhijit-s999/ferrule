@@ -92,6 +92,46 @@ def _by_test(conn, source=None):
     return out
 
 
+def vintages(conn):
+    """The batches College Board has added, newest first.
+
+    Offered as real options rather than rolling "last 30 days" windows, because
+    the bank arrives in lumps: on a bank whose last two drops were 2026-04 and
+    2026-07, every window from 30 to 180 days returns the identical set, which
+    would make the control look broken.
+    """
+    enabled = sources.enabled_ids(conn)
+    placeholders = ",".join("?" * len(enabled))
+    rows = conn.execute(
+        f"""
+        SELECT STRFTIME('%Y-%m', created_at / 1000, 'unixepoch') AS batch,
+               MIN(created_at)                                   AS starts_at,
+               COUNT(*)                                          AS total,
+               SUM(CASE WHEN in_practice_test = 0 THEN 1 ELSE 0 END) AS available
+        FROM questions
+        WHERE created_at IS NOT NULL AND stem IS NOT NULL AND stem != ''
+          AND source IN ({placeholders})
+        GROUP BY batch ORDER BY starts_at DESC
+        """,
+        enabled,
+    ).fetchall()
+
+    out, running = [], 0
+    for r in rows:
+        running += r["available"]
+        out.append(
+            {
+                "batch": r["batch"],
+                "starts_at": r["starts_at"],
+                "total": r["total"],
+                "available": r["available"],
+                # How many questions you'd have if you cut off at this batch.
+                "cumulative_available": running,
+            }
+        )
+    return out
+
+
 def by_source(conn):
     """Accuracy per source, so official numbers never blend with community ones."""
     rows = conn.execute(

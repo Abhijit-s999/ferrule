@@ -21,10 +21,43 @@ from . import db, sources
 
 
 def _source_filter(conn, alias="q"):
-    """SQL fragment restricting a query to the sources the user practises from."""
+    """Restrict a query to the sources the user practises from, and to the
+    question vintage they asked for.
+
+    Vintage matters because the bank keeps growing, and it grows in discrete
+    batches rather than continuously -- College Board drops a few hundred
+    questions at a time. The newest batch is the closest thing available to
+    what the current exam looks like, which is worth practising on when your
+    test is weeks away.
+
+    Undated questions (the community source carries no dates) are excluded
+    whenever a cutoff is active: "only questions added since July" cannot
+    honestly include a question whose date nobody knows.
+    """
     ids = sources.enabled_ids(conn)
     placeholders = ",".join("?" * len(ids))
-    return f"AND {alias}.source IN ({placeholders})", list(ids)
+    clause = f"AND {alias}.source IN ({placeholders})"
+    params = list(ids)
+
+    cutoff = min_created(conn)
+    if cutoff:
+        clause += f" AND {alias}.created_at IS NOT NULL AND {alias}.created_at >= ?"
+        params.append(cutoff)
+    return clause, params
+
+
+def min_created(conn):
+    """Epoch-ms cutoff: only serve questions added at or after this instant."""
+    raw = db.get_meta(conn, "min_created")
+    try:
+        return int(raw) if raw else 0
+    except ValueError:
+        return 0
+
+
+def set_min_created(conn, cutoff_ms):
+    db.set_meta(conn, "min_created", int(cutoff_ms or 0))
+    return min_created(conn)
 
 # Share of the real digital SAT each domain occupies. Used so that a weak but
 # rare skill cannot crowd out a slightly-less-weak skill worth triple the points.
