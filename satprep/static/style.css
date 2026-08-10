@@ -694,6 +694,71 @@ td.num, .num {
 .pager { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 18px; }
 .pager .at { font: 12.5px var(--mono); color: var(--ink-3); }
 
+/* ---------------------------------------------------------------- flow mode
+
+   Everything that competes for attention is removed: navigation, the clock,
+   progress counts, the brand. What is left is one question, centred, on a
+   calmer ground than the rest of the app. The stats stay on screen but are
+   pushed to the bottom in muted text, readable if you look for them and
+   invisible if you do not. */
+
+body.focus-mode header { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+body.focus-mode #examhead { display: none; }
+body.focus-mode { background: var(--surface-2); }
+header { transition: transform var(--t) var(--ease), opacity var(--t) var(--ease); }
+
+/* Centre a short question in the window rather than stranding it at the top,
+   but let a long passage grow downward instead of being clipped —
+   `safe center` degrades to flex-start once the content overflows. */
+body.focus-mode main {
+  max-width: 720px; padding: 40px 22px 56px;
+  animation: none;
+  min-height: 100vh;
+  display: flex; flex-direction: column;
+  justify-content: safe center;
+}
+
+.flowwrap { animation: flowin 260ms var(--ease) both; }
+@keyframes flowin {
+  from { opacity: 0; transform: translateY(10px) scale(.995); }
+  to   { opacity: 1; transform: none; }
+}
+
+.flowmeta {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--ink-3); margin-bottom: 20px;
+}
+
+/* The one piece of gamification, kept deliberately quiet: a number that grows.
+   It never scolds you — a wrong answer just resets it to zero without comment. */
+.streak {
+  font: 600 15px var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--ink-3); min-width: 26px; text-align: right;
+  transition: color var(--t) var(--ease);
+}
+.streak.hot { color: var(--good); }
+.streak.bump { animation: bump 340ms var(--ease); }
+@keyframes bump {
+  0% { transform: scale(1); } 42% { transform: scale(1.32); } 100% { transform: scale(1); }
+}
+
+.flowok {
+  margin-top: 16px; font-size: 13.5px; color: var(--good); font-weight: 550;
+  animation: rise 180ms var(--ease) both;
+}
+
+.flowfoot {
+  display: flex; align-items: center; gap: 10px; margin-top: 26px;
+  font-size: 11.5px; color: var(--ink-3);
+  opacity: .55; transition: opacity var(--t) var(--ease);
+}
+.flowfoot:hover { opacity: 1; }
+
+body.focus-mode .stimulus, body.focus-mode .stem { font-size: 17px; }
+body.focus-mode .choice { padding: 13px 15px; }
+.spr-entry input.ok { border-color: var(--good); }
+.spr-entry input.no { border-color: var(--bad); }
+
 /* ---------------------------------------------------------------- misc */
 
 .empty { text-align: center; padding: 52px 20px; color: var(--ink-3); }

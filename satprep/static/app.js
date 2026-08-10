@@ -461,7 +461,7 @@ VIEWS.bank = async function renderBank() {
   for (const [k, v] of Object.entries(f)) if (v) params.set(k, v);
 
   if (!$('.qlist')) main.innerHTML = '<div class="empty">Loading…</div>';
-  const data = await api('/api/bank?' + params);
+  const [data, vt] = await Promise.all([api('/api/bank?' + params), api('/api/vintages')]);
 
   const skills = data.facets.skills;
   const domains = [...new Set(skills.map((s) => s.domain))];
@@ -497,9 +497,21 @@ VIEWS.bank = async function renderBank() {
         <option value="unseen" ${f.unseen ? 'selected' : ''}>Not attempted</option>
         <option value="missed" ${f.missed ? 'selected' : ''}>Previously missed</option>
       </select>
+      <select id="bsince" title="When College Board added the question. Community questions carry no date and are excluded when this is set.">
+        <option value="">Any date added</option>
+        ${vt.vintages.map((v) => `<option value="${v.starts_at}" ${String(f.since) === String(v.starts_at) ? 'selected' : ''}>
+          Added ${v.batch} or later (${v.total})</option>`).join('')}
+      </select>
     </div>
 
-    <p class="sub">${data.total.toLocaleString()} matching · page ${data.page} of ${data.pages}</p>
+    <div class="row" style="margin-bottom:16px">
+      <button class="primary" id="flowgo">Start</button>
+      <span class="sub" style="margin:0">
+        ${data.total.toLocaleString()} matching · one at a time, no clock, keyboard only
+      </span>
+      <span class="spacer"></span>
+      <span class="sub" style="margin:0">page ${data.page} of ${data.pages}</span>
+    </div>
 
     <div class="qlist stagger">
       ${data.items.map((q, i) => qCard(q, i)).join('') ||
@@ -522,6 +534,8 @@ VIEWS.bank = async function renderBank() {
     f.missed = e.target.value === 'missed' ? '1' : '';
     state.bank.page = 1; VIEWS.bank();
   };
+  $('#bsince').onchange = (e) => setF('since', e.target.value);
+  $('#flowgo').onclick = flowStart;
 
   let deb;
   const search = $('#bq');
@@ -571,6 +585,162 @@ function qCard(q, i) {
         </div>
       </div></div></div>
     </div>`;
+}
+
+// ---------------------------------------------------------------- flow
+
+/* An uninterrupted run through the bank.
+ *
+ * The design goal is concentration, so everything that breaks it is removed:
+ * no countdown, no set length, no "well done" screen, no navigation, and above
+ * all no waiting — questions are buffered ahead so the next one is already
+ * there. Correct answers advance on their own after a short beat to keep the
+ * rhythm; a wrong answer stops and waits, because that is the moment worth
+ * spending time on.
+ */
+const flow = {
+  on: false, queue: [], current: null, answered: null,
+  streak: 0, best: 0, done: 0, correct: 0, seen: [],
+  autoAdvance: true, t0: 0, timer: null,
+};
+
+async function flowFill() {
+  const p = new URLSearchParams({ n: 25 });
+  for (const [k, v] of Object.entries(state.bank.filters)) if (v) p.set(k, v);
+  // Do not serve back what this run has already shown.
+  if (flow.seen.length) p.set('exclude', flow.seen.slice(-120).join(','));
+  try {
+    const { questions } = await api('/api/bank/queue?' + p);
+    const have = new Set(flow.queue.map((q) => q.external_id));
+    flow.queue.push(...questions.filter((q) => !have.has(q.external_id)));
+  } catch { /* keep whatever is buffered */ }
+}
+
+async function flowStart() {
+  flow.on = true;
+  Object.assign(flow, { queue: [], streak: 0, best: 0, done: 0, correct: 0, seen: [] });
+  document.body.classList.add('focus-mode');
+  show('flow');
+  main.innerHTML = '<div class="empty">…</div>';
+  await flowFill();
+  if (!flow.queue.length) {
+    flowExit();
+    return alert('No questions match those filters.');
+  }
+  const sess = await post('/api/session', { mode: 'flow' });
+  state.session = sess.session_id;
+  flowNext();
+}
+
+function flowExit() {
+  flow.on = false;
+  clearTimeout(flow.timer);
+  document.body.classList.remove('focus-mode');
+  show('bank');
+}
+
+VIEWS.flow = function () { if (flow.current) flowRender(); };
+
+function flowNext() {
+  clearTimeout(flow.timer);
+  flow.answered = null;
+  flow.current = flow.queue.shift();
+  if (!flow.current) { flowFill().then(() => flow.queue.length ? flowNext() : flowExit()); return; }
+  flow.seen.push(flow.current.external_id);
+  if (flow.queue.length < 6) flowFill();          // refill before it can run dry
+  flow.t0 = Date.now();
+  flowRender();
+}
+
+function flowRender() {
+  const q = flow.current;
+  const isSpr = q.qtype === 'spr';
+  main.innerHTML = `
+    <div class="flowwrap">
+      <div class="flowmeta">
+        <span class="tag ${q.difficulty}">${{ E: 'Easy', M: 'Medium', H: 'Hard' }[q.difficulty] || q.difficulty}</span>
+        <span>${esc(q.skill)}</span>
+        <span class="spacer"></span>
+        <span class="streak ${flow.streak >= 3 ? 'hot' : ''}" id="streak">${flow.streak}</span>
+      </div>
+      ${q.stimulus ? `<div class="stimulus">${q.stimulus}</div>` : ''}
+      <div class="stem">${q.stem}</div>
+      ${isSpr
+        ? `<div class="spr-entry">
+             <input type="text" id="spr" placeholder="Answer" autocomplete="off" autofocus>
+           </div>`
+        : `<div class="choices">
+             ${q.options.map((o) => `
+               <button class="choice" data-letter="${o.letter}">
+                 <span class="letter">${o.letter}</span><span>${o.content}</span>
+               </button>`).join('')}
+           </div>`}
+      <div id="fv"></div>
+      <div class="flowfoot">
+        <span>${isSpr ? '<span class="kbd">Enter</span> answer' : '<span class="kbd">A</span>–<span class="kbd">D</span>'}
+          · <span class="kbd">Space</span> next · <span class="kbd">Esc</span> exit</span>
+        <span class="spacer"></span>
+        <span>${flow.done ? `${flow.correct}/${flow.done} · best streak ${flow.best}` : ''}</span>
+      </div>
+    </div>`;
+
+  if (isSpr) $('#spr').focus();
+  else $$('.choice').forEach((b) => (b.onclick = () => flowAnswer(b.dataset.letter)));
+}
+
+async function flowAnswer(response) {
+  if (flow.answered || !response) return;
+  const q = flow.current;
+  const elapsed = Date.now() - flow.t0;
+
+  const res = await post('/api/answer', {
+    external_id: q.external_id, response, elapsed_ms: elapsed, session_id: state.session,
+  });
+  flow.answered = res;
+  flow.done++;
+  if (res.correct) {
+    flow.correct++; flow.streak++;
+    flow.best = Math.max(flow.best, flow.streak);
+  } else {
+    flow.streak = 0;
+  }
+
+  const keys = res.correct_answer.map(String);
+  $$('.choice').forEach((b) => {
+    b.disabled = true;
+    if (keys.includes(b.dataset.letter)) b.classList.add('correct');
+    else if (b.dataset.letter === response) b.classList.add('wrong');
+  });
+  const sp = $('#spr');
+  if (sp) { sp.disabled = true; sp.classList.add(res.correct ? 'ok' : 'no'); }
+
+  const st = $('#streak');
+  if (st) {
+    st.textContent = flow.streak;
+    st.classList.toggle('hot', flow.streak >= 3);
+    st.classList.remove('bump'); void st.offsetWidth; st.classList.add('bump');
+  }
+
+  /* Right: a brief beat, then move — the rhythm is the point.
+     Wrong: stop, show the official explanation, wait to be told to continue. */
+  if (res.correct) {
+    $('#fv').innerHTML = `<div class="flowok">Correct <span class="muted">· ${secs(elapsed)}</span></div>`;
+    if (flow.autoAdvance) flow.timer = setTimeout(flowNext, 620);
+  } else {
+    $('#fv').innerHTML = `
+      <div class="verdict bad">
+        <div class="head">Answer: ${keys.join(' or ')}</div>
+        ${res.rationale ? `<div class="rationale">${res.rationale}</div>` : ''}
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="fnext">Continue</button>
+        <button class="ghost" id="fask">${I.spark} Ask the tutor</button>
+      </div>
+      <div id="tutor-out"></div>`;
+    $('#fnext').onclick = flowNext;
+    $('#fnext').focus();
+    $('#fask').onclick = () => askTutor(q, response, false);
+  }
 }
 
 // ---------------------------------------------------------------- analytics
@@ -843,6 +1013,24 @@ function pollRuntime() {
 }
 
 // ---------------------------------------------------------------- keyboard
+
+/* Flow keys are handled first and never fall through to the practice bindings. */
+document.addEventListener('keydown', (e) => {
+  if (!flow.on) return;
+  const typing = document.activeElement?.tagName === 'INPUT';
+
+  if (e.key === 'Escape') { e.preventDefault(); return flowExit(); }
+  if (e.key === 'Enter' && typing) { e.preventDefault(); return flowAnswer($('#spr').value); }
+  if ((e.key === ' ' || e.key === 'Enter') && flow.answered) { e.preventDefault(); return flowNext(); }
+  if (typing || flow.answered) return;
+
+  const k = e.key.toUpperCase();
+  const letter = 'ABCD'.includes(k) ? k : '1234'.includes(k) ? 'ABCD'['1234'.indexOf(k)] : null;
+  if (letter && main.querySelector(`.choice[data-letter="${letter}"]`)) {
+    e.preventDefault();
+    flowAnswer(letter);
+  }
+}, true);
 
 document.addEventListener('keydown', (e) => {
   if (state.view !== 'practice') return;

@@ -266,6 +266,12 @@ def store_opensat_question(conn, item, section):
     """
     inner = item.get("question") or {}
     choices = inner.get("choices") or {}
+
+    def clean(v):
+        """OpenSAT writes the *string* "null" for absent fields, which would
+        otherwise be rendered to the reader as the word null."""
+        s = (v or "").strip()
+        return "" if s.lower() in ("null", "none", "undefined", "n/a") else s
     options = [
         {"letter": letter, "content": content}
         for letter, content in sorted(choices.items())
@@ -313,11 +319,11 @@ def store_opensat_question(conn, item, section):
             domain,  # no skill tags upstream; domain stands in
             DIFFICULTY_CODES.get(str(item.get("difficulty", "")).lower(), "M"),
             "mcq" if options else "spr",
-            inner.get("question") or "",
-            inner.get("paragraph") or "",
+            clean(inner.get("question")),
+            clean(inner.get("paragraph")),
             json.dumps(options),
             json.dumps(answer),
-            inner.get("explanation") or "",
+            clean(inner.get("explanation")),
             now_ms(),
         ),
     )
