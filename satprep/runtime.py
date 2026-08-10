@@ -20,6 +20,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tarfile
@@ -408,8 +409,10 @@ class Runtime:
                 os.path.dirname(binary) + ":" + env.get("LD_LIBRARY_PATH", "")
             )
             self.proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                start_new_session=True,
             )
+            _record_pid(self.proc.pid)
             self.port = port
             self.model_id = model_id
 
@@ -479,6 +482,7 @@ class Runtime:
                 self.proc.kill()
         self.proc = None
         self.port = None
+        _clear_pid()
         if self.state.get("phase") == "ready":
             self._set(phase="idle", detail="", progress=0.0)
 
@@ -494,4 +498,99 @@ class Runtime:
         return True
 
 
+PIDFILE = os.path.join(DATA_DIR, "model-server.pid")
+
+
+def _record_pid(pid):
+    """Note the model server's pid so a later run can reap it if we are killed."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(PIDFILE, "w") as fh:
+        fh.write(str(pid))
+
+
+def _clear_pid():
+    try:
+        os.remove(PIDFILE)
+    except FileNotFoundError:
+        pass
+
+
+def reap_stale_server():
+    """Kill a model server left behind by a previous run.
+
+    Graceful shutdown is handled by the atexit and signal handlers, but nothing
+    runs on SIGKILL or a power cut -- and an orphaned llama-server sits on the
+    GPU indefinitely. So the pid is recorded on disk and checked at startup.
+
+    (PR_SET_PDEATHSIG is deliberately not used: it fires when the *creating
+    thread* dies, and the model is started from a short-lived worker thread, so
+    it would kill the model seconds after it came up. Calling dlopen from a
+    post-fork preexec hook in a threaded process is unsafe besides.)
+    """
+    try:
+        with open(PIDFILE) as fh:
+            pid = int(fh.read().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            cmdline = fh.read().decode("utf-8", "replace")
+    except OSError:
+        _clear_pid()
+        return None
+
+    # Only kill it if it really is our model server, never a recycled pid.
+    if "llama-server" not in cmdline or "satprep" not in cmdline:
+        _clear_pid()
+        return None
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(20):
+            time.sleep(0.25)
+            os.kill(pid, 0)
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    _clear_pid()
+    return pid
+
+
 RUNTIME = Runtime()
+
+
+def _cleanup(*_args):
+    """Stop the model server however this process is going down."""
+    try:
+        RUNTIME.stop()
+    except Exception:
+        pass
+
+
+def install_exit_handlers():
+    """Guarantee the GPU is released when the backend exits.
+
+    Three layers, because each covers a case the others miss:
+      - atexit          normal interpreter shutdown
+      - SIGTERM/SIGINT  the desktop shell or Ctrl-C asking us to stop
+      - PR_SET_PDEATHSIG the parent being killed outright
+    """
+    import atexit
+    import signal
+
+    atexit.register(_cleanup)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous = signal.getsignal(sig)
+
+            def handler(signum, frame, _prev=previous):
+                _cleanup()
+                if callable(_prev):
+                    _prev(signum, frame)
+                else:
+                    raise SystemExit(0)
+
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass  # not on the main thread, or unsupported platform
