@@ -31,7 +31,7 @@ the whole setup.
 <summary>Running from source instead</summary>
 
 ```bash
-git clone https://github.com/OWNER/ferrule && cd ferrule
+git clone https://github.com/Abhijit-s999/ferrule && cd ferrule
 npm install && npm start
 ```
 
@@ -62,23 +62,12 @@ that, ferrule appears in your launcher like any installed program, and the
 compositor matches its window to the entry, so the taskbar shows the real icon
 rather than a generic Electron one.
 
-To build a distributable binary:
-
-```bash
-npm run build:linux    # AppImage
-npm run build:win      # NSIS installer
-npm run build:mac      # dmg
-```
-
 **Command line**, if you prefer it:
 
 ```bash
 ./ferrule.py fetch     # download the question bank (~4 min, once)
 ./ferrule.py serve     # then open http://localhost:8733
 ```
-
-Requires Python 3.9+. The backend has **no Python dependencies** — standard
-library only.
 
 ---
 
