@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS questions (
     -- 1 if this question also appears in an official full-length practice test.
     -- Held back by default so Bluebook practice scores stay an honest measure.
     in_practice_test INTEGER NOT NULL DEFAULT 0,
+    -- 1 if the question references a figure the bank never shipped, making it
+    -- unanswerable. Kept in the browsable bank, kept out of practice.
+    unusable       INTEGER NOT NULL DEFAULT 0,
     qtype          TEXT,                  -- mcq / spr
     stem           TEXT,
     stimulus       TEXT,
@@ -115,6 +118,10 @@ def _migrate(conn):
     for col in ("created_at", "updated_at"):
         if col not in have:
             conn.execute(f"ALTER TABLE questions ADD COLUMN {col} INTEGER")
+    if "unusable" not in have:
+        conn.execute(
+            "ALTER TABLE questions ADD COLUMN unusable INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_q_source ON questions(source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_q_created ON questions(created_at)")
     conn.commit()
@@ -152,6 +159,54 @@ def normalize_skill_names(conn):
                 merged += 1
     conn.commit()
     return merged
+
+
+def flag_unanswerable(conn):
+    """Hide questions that point at a figure the bank never shipped.
+
+    A handful of questions say "in the figure above" or "the graph shown" but
+    carry no SVG, table or image — the drawing simply is not in the data, and
+    no amount of re-fetching will produce it. They cannot be solved, so serving
+    one is worse than serving nothing: it reads as your own failure.
+
+    The wording has to imply a picture is *present*. Phrases like "the graph of
+    y = h(x) has an x-intercept" describe a graph conceptually and are perfectly
+    answerable, so they must not be caught.
+    """
+    import re
+
+    # Must imply a picture is actually on the page. "the graph OF y = h(x)"
+    # describes one in words and stays answerable, so `of` is excluded
+    # explicitly -- it was the single biggest source of false positives.
+    noun = r"(?:figure|diagram|scatterplot|graph|chart|table)"
+    shown = re.compile(
+        rf"\bin\s+the\s+{noun}\b(?!\s+of\b)"
+        rf"|\bthe\s+{noun}\s+(?:above|below|shown)\b"
+        rf"|\b{noun}\s+(?:above|below)\b"
+        rf"|\brefer\s+to\s+the\s+{noun}\b"
+        rf"|\baccording\s+to\s+the\s+{noun}\b(?!\s+of\b)"
+        r"|\bas\s+shown\s+in\s+the\b"
+        r"|\bshown\s+(?:above|below)\b",
+        re.I,
+    )
+
+    conn.execute("UPDATE questions SET unusable = 0")
+    flagged = []
+    for r in conn.execute(
+        "SELECT external_id, stem, stimulus, options FROM questions "
+        "WHERE stem IS NOT NULL AND stem != ''"
+    ):
+        blob = (r["stem"] or "") + (r["stimulus"] or "") + (r["options"] or "")
+        if "<svg" in blob or "<table" in blob or "<img" in blob:
+            continue
+        if shown.search(re.sub(r"<[^>]+>", " ", blob)):
+            flagged.append((r["external_id"],))
+
+    conn.executemany(
+        "UPDATE questions SET unusable = 1 WHERE external_id = ?", flagged
+    )
+    conn.commit()
+    return len(flagged)
 
 
 def mark_practice_test_items(conn, external_ids):
@@ -272,8 +327,13 @@ def store_opensat_question(conn, item, section):
         otherwise be rendered to the reader as the word null."""
         s = (v or "").strip()
         return "" if s.lower() in ("null", "none", "undefined", "n/a") else s
+    # Convert LaTeX on the individual strings, before they are serialised.
+    # Doing it after json.dumps would see "\\frac" rather than "\frac" and
+    # would inject unescaped quotes into the JSON.
+    from . import mathtex
+
     options = [
-        {"letter": letter, "content": content}
+        {"letter": letter, "content": mathtex.render(content)}
         for letter, content in sorted(choices.items())
         if content is not None
     ]
@@ -282,13 +342,20 @@ def store_opensat_question(conn, item, section):
     # share only 1,200 ids ("random_id_a1" alone repeats 91 times). Keying on it
     # would silently drop half the questions, so key on the content instead:
     # stable across re-fetches, and unique per distinct question.
+    # Derived from the RAW upstream fields only. If it were computed from the
+    # rendered text, any change to rendering would give every question a new
+    # identity and re-import would insert duplicates instead of updating.
     fingerprint = hashlib.sha1(
         "\x1f".join(
             [
                 section,
-                inner.get("paragraph") or "",
-                inner.get("question") or "",
-                "|".join(f"{o['letter']}={o['content']}" for o in options),
+                (inner.get("paragraph") or ""),
+                (inner.get("question") or ""),
+                "|".join(
+                    f"{letter}={content}"
+                    for letter, content in sorted(choices.items())
+                    if content is not None
+                ),
             ]
         ).encode("utf-8")
     ).hexdigest()[:20]
@@ -319,11 +386,11 @@ def store_opensat_question(conn, item, section):
             domain,  # no skill tags upstream; domain stands in
             DIFFICULTY_CODES.get(str(item.get("difficulty", "")).lower(), "M"),
             "mcq" if options else "spr",
-            clean(inner.get("question")),
-            clean(inner.get("paragraph")),
+            mathtex.render(clean(inner.get("question"))),
+            mathtex.render(clean(inner.get("paragraph"))),
             json.dumps(options),
             json.dumps(answer),
-            clean(inner.get("explanation")),
+            mathtex.render(clean(inner.get("explanation"))),
             now_ms(),
         ),
     )

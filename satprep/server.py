@@ -280,6 +280,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/tutor/explain":
                 return self._explain()
 
+            if route == "/api/tutor/chat":
+                return self._chat()
+
             if route == "/api/vintages":
                 conn = _conn()
                 scheduler.set_min_created(conn, self._body().get("min_created", 0))
@@ -426,7 +429,9 @@ class Handler(BaseHTTPRequestHandler):
         one = lambda k, d=None: (q.get(k) or [d])[0]
         n = min(60, max(5, int(one("n", "25"))))
 
-        where, params = ["q.stem IS NOT NULL", "q.stem != ''"], []
+        # Never hand out a question whose figure is missing — it cannot be
+        # answered, and being asked one feels like your own failure.
+        where, params = ["q.stem IS NOT NULL", "q.stem != ''", "q.unusable = 0"], []
         for key, col in (("test", "q.test"), ("domain", "q.domain"),
                          ("skill", "q.skill"), ("difficulty", "q.difficulty"),
                          ("source", "q.source")):
@@ -461,6 +466,40 @@ class Handler(BaseHTTPRequestHandler):
             params + [n],
         ).fetchall()
         return [db.row_to_question(r) for r in rows]
+
+    def _chat(self):
+        """Stream a reply in an ongoing conversation about the current question."""
+        body = self._body()
+        row = _conn().execute(
+            "SELECT * FROM questions WHERE external_id = ?", (body["external_id"],)
+        ).fetchone()
+        if not row:
+            return self._send({"error": "unknown question"}, 404)
+
+        question = db.row_to_question(row)
+        question["stem"] = row["stem"]
+        question["stimulus"] = row["stimulus"]
+        detail = {
+            "correct_answer": json.loads(row["correct_answer"] or "[]"),
+            "rationale": row["rationale"] or "",
+        }
+
+        self._stream_start()
+        try:
+            runtime.RUNTIME.ensure_running(
+                on_status=lambda msg: self._stream_send({"status": msg})
+            )
+            for chunk in tutor.stream_chat(
+                question, detail, body.get("history") or [], bool(body.get("answered"))
+            ):
+                self._stream_send({"delta": chunk})
+            self._stream_send({"done": True})
+        except tutor.TutorError as e:
+            self._stream_send({"error": str(e)})
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            self._stream_send({"error": f"{type(e).__name__}: {e}"})
 
     def _explain(self):
         """Stream a tutor explanation for one question."""
