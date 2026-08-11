@@ -55,20 +55,15 @@ questions only.
   Enable them in Settings when you want extra volume; per-source accuracy is
   reported separately either way.
 
-### OnePrep — *linked, deliberately not fetched*
 
-- **Source:** <https://www.oneprep.com/>
-- **Status:** credited and recommended as a free resource. Not scraped, not
-  mirrored, not bundled.
-- **Why:** OnePrep's `robots.txt` disallows automated access to its question API
-  (`Disallow: /api/`), separately disallows the `ClaudeBot` and `anthropic-ai`
-  agents entirely, and sets `Content-Signal: ai-train=no, use=reference` as an
-  express reservation of rights under Article 4 of EU Directive 2019/790. Its
-  content is published "All rights reserved".
+---
 
-Linking to a free resource is something its terms permit, and OnePrep is a
-genuinely good free question bank. Go use it directly — just not through this
-app.
+## Adding a source
+
+Only sources whose licence or terms clearly permit programmatic access belong
+here. Check the licence and the site's `robots.txt` for the endpoints you intend
+to call before proposing one. If a site reserves those rights, link to it and
+send people there — do not add a fetcher.
 
 ---
 

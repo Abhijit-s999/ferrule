@@ -68,27 +68,15 @@ DEFAULT_SOURCES = [s["id"] for s in SOURCES.values() if s["default_enabled"]]
 
 
 # ---------------------------------------------------------------------------
-# Sources we deliberately do not fetch from
+# Adding a source
 # ---------------------------------------------------------------------------
-# Recorded here so the reasoning is auditable and nobody has to re-derive it.
+# Before proposing one, confirm its terms actually permit programmatic access:
+# read the licence, and check robots.txt for the endpoints you intend to call.
+# If a site reserves those rights, link to it and send people there instead —
+# do not add a fetcher for it. Several otherwise-good question banks fall into
+# that category, which is why this check is the first step and not the last.
 
-NOT_FETCHED = {
-    "oneprep": {
-        "name": "OnePrep",
-        "url": "https://www.oneprep.com/",
-        "reason": (
-            "OnePrep's robots.txt disallows automated access to its question "
-            "API (`Disallow: /api/`), separately disallows the ClaudeBot and "
-            "anthropic-ai agents entirely, and sets `Content-Signal: "
-            "ai-train=no, use=reference` as an express reservation of rights. "
-            "Its content is marked \"All rights reserved\"."
-        ),
-        "status": (
-            "Linked and credited as a recommended free resource, which its "
-            "terms do permit. Not scraped, not mirrored, not bundled."
-        ),
-    },
-}
+NOT_FETCHED = {}
 
 
 def get(source_id):

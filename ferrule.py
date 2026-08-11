@@ -58,11 +58,11 @@ def cmd_sources(args):
         print(f"        {src['url']}")
         print(f"        {src['why']}\n")
 
-    print("  Not fetched, by design:")
-    for nf in sources.NOT_FETCHED.values():
-        print(f"    {nf['name']} -- {nf['url']}")
-        print(f"      {nf['reason']}")
-        print(f"      {nf['status']}\n")
+    if sources.NOT_FETCHED:
+        print("  Not fetched, by design:")
+        for nf in sources.NOT_FETCHED.values():
+            print(f"    {nf['name']} -- {nf['url']}")
+            print(f"      {nf['reason']}\n")
     return 0
 
 
