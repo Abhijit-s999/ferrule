@@ -2,7 +2,7 @@
 
 /* The desktop shell.
  *
- * Starts the satprep backend as a child process on a free port, waits for it to
+ * Starts the ferrule backend as a child process on a free port, waits for it to
  * answer, and opens a window on it. The user never sees a terminal, a port, or
  * a URL. Closing the window stops the backend and any model server it started.
  */
@@ -11,6 +11,7 @@ const { app, BrowserWindow, shell, dialog, Menu } = require('electron');
 const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 const net = require('net');
+const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
@@ -24,10 +25,10 @@ let win = null;
  * text, tables and small SVG charts, so hardware acceleration buys it nothing
  * and costs it stability. Disable it on that combination.
  *
- * Set SATPREP_GPU=1 to force acceleration back on. */
+ * Set FERRULE_GPU=1 to force acceleration back on. */
 function shouldDisableGpu() {
-  if (process.env.SATPREP_GPU === '1') return false;
-  if (process.env.SATPREP_GPU === '0') return true;
+  if (process.env.FERRULE_GPU === '1') return false;
+  if (process.env.FERRULE_GPU === '0') return true;
   if (process.platform !== 'linux') return false;
   const wayland =
     !!process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland';
@@ -89,33 +90,54 @@ function waitForServer(p, timeoutMs = 40000) {
   });
 }
 
+/* Released builds ship the backend frozen into a single executable, so an
+ * installed copy needs no Python at all. A source checkout has no such binary
+ * and falls back to the interpreter, which is what developers want anyway. */
+function findBundledBackend() {
+  const exe = process.platform === 'win32' ? 'ferrule-backend.exe' : 'ferrule-backend';
+  const candidates = [
+    path.join(process.resourcesPath || '', 'backend', exe),
+    path.join(ROOT, 'dist', 'backend', exe),
+    path.join(ROOT, 'backend', exe),
+  ];
+  return candidates.find((p) => p && fs.existsSync(p)) || null;
+}
+
 async function startBackend() {
-  const python = findPython();
-  if (!python) {
-    dialog.showErrorBox(
-      'Python not found',
-      'satprep needs Python 3.9 or newer.\n\n' +
-      (process.platform === 'win32'
-        ? 'Install it from python.org or the Microsoft Store, then reopen satprep.'
-        : 'Install python3 with your package manager, then reopen satprep.')
-    );
-    app.quit();
-    return;
+  port = await freePort();
+  const bundled = findBundledBackend();
+
+  let cmd, args;
+  if (bundled) {
+    cmd = bundled;
+    args = ['serve', '--port', String(port)];
+  } else {
+    const python = findPython();
+    if (!python) {
+      dialog.showErrorBox(
+        'Python not found',
+        'This is a source checkout, which needs Python 3.9 or newer to run.\n\n' +
+        (process.platform === 'win32'
+          ? 'Install it from python.org or the Microsoft Store, then reopen ferrule.\n\n'
+          : 'Install python3 with your package manager, then reopen ferrule.\n\n') +
+        'The released installers bundle everything and need no Python.'
+      );
+      app.quit();
+      return;
+    }
+    const script = [path.join(ROOT, 'ferrule.py'), 'serve', '--port', String(port)];
+    cmd = python;
+    args = python === 'py' ? ['-3', ...script] : script;
   }
 
-  port = await freePort();
-  const args = [path.join(ROOT, 'satprep.py'), 'serve', '--port', String(port)];
-  backend = spawn(python === 'py' ? 'py' : python, python === 'py' ? ['-3', ...args] : args, {
-    cwd: ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  backend = spawn(cmd, args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
 
   let log = '';
   backend.stdout.on('data', (d) => { log += d; });
   backend.stderr.on('data', (d) => { log += d; });
   backend.on('exit', (code) => {
     if (code !== 0 && !app.isQuitting) {
-      dialog.showErrorBox('satprep backend stopped', log.slice(-1500) || `exit code ${code}`);
+      dialog.showErrorBox('ferrule backend stopped', log.slice(-1500) || `exit code ${code}`);
       app.quit();
     }
   });
@@ -129,7 +151,7 @@ function createWindow() {
     height: 900,
     minWidth: 380,
     backgroundColor: '#16171a',
-    title: 'satprep',
+    title: 'ferrule',
     icon: path.join(__dirname, 'icon.png'),
     autoHideMenuBar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false },
@@ -153,7 +175,7 @@ function createWindow() {
 Menu.setApplicationMenu(
   Menu.buildFromTemplate([
     {
-      label: 'satprep',
+      label: 'ferrule',
       submenu: [
         { role: 'reload' },
         { role: 'toggleDevTools' },
@@ -171,7 +193,7 @@ app.whenReady().then(async () => {
     await startBackend();
     createWindow();
   } catch (e) {
-    dialog.showErrorBox('satprep could not start', String(e));
+    dialog.showErrorBox('ferrule could not start', String(e));
     app.quit();
   }
 

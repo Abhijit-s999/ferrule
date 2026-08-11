@@ -31,7 +31,7 @@ ASSESSMENTS = {"sat": 99, "psat": 100, "psat89": 102}
 TEST_IDS = {"R&W": 1, "Math": 2}
 TEST_NAMES = {1: "Reading and Writing", 2: "Math"}
 
-UA = "Mozilla/5.0 (X11; Linux x86_64) satprep/1.0 (+https://github.com/)"
+UA = "Mozilla/5.0 (X11; Linux x86_64) ferrule/1.0 (+https://github.com/)"
 
 
 class FetchError(Exception):

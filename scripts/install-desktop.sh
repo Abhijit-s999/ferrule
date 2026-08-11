@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Register satprep with the desktop environment so it appears in the
+# Register ferrule with the desktop environment so it appears in the
 # application launcher like any other installed program.
 #
 #   ./scripts/install-desktop.sh              install for the current user
@@ -15,8 +15,8 @@ DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 BIN="$HOME/.local/bin"
 APPS="$DATA/applications"
 ICONS="$DATA/icons/hicolor"
-DESKTOP="$APPS/satprep.desktop"
-LAUNCHER="$BIN/satprep"
+DESKTOP="$APPS/ferrule.desktop"
+LAUNCHER="$BIN/ferrule"
 
 refresh() {
     command -v update-desktop-database >/dev/null && update-desktop-database "$APPS" 2>/dev/null || true
@@ -26,11 +26,11 @@ refresh() {
 if [[ "${1:-}" == "--uninstall" ]]; then
     rm -f "$DESKTOP" "$LAUNCHER"
     for s in 32 64 128 256 512; do
-        rm -f "$ICONS/${s}x${s}/apps/satprep.png"
+        rm -f "$ICONS/${s}x${s}/apps/ferrule.png"
     done
-    rm -f "$ICONS/scalable/apps/satprep.svg"
+    rm -f "$ICONS/scalable/apps/ferrule.svg"
     refresh
-    echo "satprep removed from the launcher."
+    echo "ferrule removed from the launcher."
     exit 0
 fi
 
@@ -42,12 +42,12 @@ for s in 32 64 128 256 512; do
     [[ $s == 512 ]] && src="$REPO/desktop/icon.png"
     if [[ -f "$src" ]]; then
         mkdir -p "$ICONS/${s}x${s}/apps"
-        cp -f "$src" "$ICONS/${s}x${s}/apps/satprep.png"
+        cp -f "$src" "$ICONS/${s}x${s}/apps/ferrule.png"
     fi
 done
 if [[ -f "$REPO/desktop/icon.svg" ]]; then
     mkdir -p "$ICONS/scalable/apps"
-    cp -f "$REPO/desktop/icon.svg" "$ICONS/scalable/apps/satprep.svg"
+    cp -f "$REPO/desktop/icon.svg" "$ICONS/scalable/apps/ferrule.svg"
 fi
 
 # ---- launcher --------------------------------------------------------------
@@ -65,8 +65,8 @@ if [[ -x "\$REPO/node_modules/.bin/electron" ]]; then
 elif command -v electron >/dev/null; then
     exec electron "\$REPO" "\$@"
 else
-    msg="satprep needs its dependencies installed. Run: cd \$REPO && npm install"
-    command -v notify-send >/dev/null && notify-send "satprep" "\$msg"
+    msg="ferrule needs its dependencies installed. Run: cd \$REPO && npm install"
+    command -v notify-send >/dev/null && notify-send "ferrule" "\$msg"
     echo "\$msg" >&2
     exit 1
 fi
@@ -80,16 +80,16 @@ cat > "$DESKTOP" <<ENTRY
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=satprep
+Name=ferrule
 GenericName=SAT practice
 Comment=Adaptive SAT practice with per-skill analytics and a local AI tutor
 Exec=$LAUNCHER %U
-Icon=satprep
+Icon=ferrule
 Terminal=false
 Categories=Education;Math;
 Keywords=SAT;study;exam;practice;test;college;prep;
 StartupNotify=true
-StartupWMClass=satprep
+StartupWMClass=ferrule
 ENTRY
 
 refresh
@@ -97,6 +97,6 @@ refresh
 echo "Installed:"
 echo "  entry    $DESKTOP"
 echo "  launcher $LAUNCHER"
-echo "  icons    $ICONS/{32x32,64x64,128x128,256x256,512x512}/apps/satprep.png"
+echo "  icons    $ICONS/{32x32,64x64,128x128,256x256,512x512}/apps/ferrule.png"
 echo
-echo "satprep should now appear in your launcher. You can also run: satprep"
+echo "ferrule should now appear in your launcher. You can also run: ferrule"

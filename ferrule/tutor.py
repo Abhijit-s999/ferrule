@@ -1,6 +1,6 @@
 """The AI tutor: optional, pluggable, and local by default.
 
-satprep works completely without this. When it is switched on, it explains the
+ferrule works completely without this. When it is switched on, it explains the
 questions you got wrong using the question, your answer, and the official
 rationale as context.
 
@@ -10,7 +10,7 @@ LocalAI, OpenRouter, Groq and Together all implement. That means one code path
 covers nearly everything, and "bring your own endpoint" is a first-class option
 rather than a special case.
 
-API keys live in ~/.config/satprep/config.json with 0600 permissions, never in
+API keys live in ~/.config/ferrule/config.json with 0600 permissions, never in
 the database and never in the repository.
 """
 
@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 
 CONFIG_DIR = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "satprep"
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "ferrule"
 )
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 

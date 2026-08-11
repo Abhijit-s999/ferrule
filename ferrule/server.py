@@ -65,7 +65,7 @@ def _conn():
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "satprep"
+    server_version = "ferrule"
 
     def log_message(self, fmt, *args):
         pass  # keep the console clean for the fetch/progress output
@@ -548,7 +548,7 @@ def serve(host="127.0.0.1", port=8733, db_path=None):
     conn.close()
 
     if count == 0:
-        print("No questions stored yet. Run:  ./satprep.py fetch\n")
+        print("No questions stored yet. Run:  ./ferrule.py fetch\n")
 
     # Whatever takes this process down must take the model server with it,
     # otherwise an orphaned llama-server sits on the GPU indefinitely.
@@ -560,7 +560,7 @@ def serve(host="127.0.0.1", port=8733, db_path=None):
 
     httpd = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host == "127.0.0.1" else host
-    print(f"satprep running at http://{shown}:{port}   ({count} questions loaded)")
+    print(f"ferrule running at http://{shown}:{port}   ({count} questions loaded)")
     print("Ctrl-C to stop.")
     try:
         httpd.serve_forever()

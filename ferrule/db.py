@@ -11,7 +11,7 @@ import os
 import sqlite3
 import time
 
-DEFAULT_DB = os.path.join(os.path.expanduser("~"), ".local", "share", "satprep", "satprep.db")
+DEFAULT_DB = os.path.join(os.path.expanduser("~"), ".local", "share", "ferrule", "ferrule.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS questions (
@@ -92,7 +92,7 @@ CREATE INDEX IF NOT EXISTS idx_r_due        ON reviews(due_at);
 
 def connect(path=None):
     """Open the database, creating it and its parent directory if needed."""
-    path = path or os.environ.get("SATPREP_DB") or DEFAULT_DB
+    path = path or os.environ.get("FERRULE_DB") or DEFAULT_DB
     os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path, timeout=30.0)
     conn.row_factory = sqlite3.Row

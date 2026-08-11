@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""satprep -- adaptive SAT practice against the official question bank.
+"""ferrule -- adaptive SAT practice against the official question bank.
 
-    ./satprep.py fetch     download the question bank (once, ~2 min)
-    ./satprep.py serve     start the app
-    ./satprep.py stats     per-skill breakdown in the terminal
-    ./satprep.py plan      what to study in the next N minutes
+    ./ferrule.py fetch     download the question bank (once, ~2 min)
+    ./ferrule.py serve     start the app
+    ./ferrule.py stats     per-skill breakdown in the terminal
+    ./ferrule.py plan      what to study in the next N minutes
 """
 
 import argparse
 import sys
 
-from satprep import db, fetch, server, sources, stats
+from ferrule import db, fetch, server, sources, stats
 
 
 def cmd_fetch(args):
@@ -75,7 +75,7 @@ def cmd_stats(args):
     conn = db.connect(args.db)
     ov = stats.overview(conn)
     if not ov["attempts"]:
-        print("No attempts yet. Run ./satprep.py serve and answer some questions.")
+        print("No attempts yet. Run ./ferrule.py serve and answer some questions.")
         return 0
 
     print(f"\n{ov['attempts']} questions answered  |  "
@@ -132,9 +132,9 @@ def cmd_plan(args):
 
 
 def main():
-    p = argparse.ArgumentParser(prog="satprep", description=__doc__,
+    p = argparse.ArgumentParser(prog="ferrule", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--db", help="database path (default ~/.local/share/satprep/satprep.db)")
+    p.add_argument("--db", help="database path (default ~/.local/share/ferrule/ferrule.db)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     f = sub.add_parser("fetch", help="download the official question bank")
