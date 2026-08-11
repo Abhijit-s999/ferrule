@@ -16,3 +16,9 @@ venv/
 # Node / Electron
 node_modules/
 dist/
+
+# build output
+build/
+release/
+dist/
+*.spec

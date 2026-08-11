@@ -1,6 +1,6 @@
 'use strict';
 
-/* satprep front end. Vanilla, no build step.
+/* ferrule front end. Vanilla, no build step.
  *
  * Three things here are worth knowing before reading:
  *
@@ -219,7 +219,7 @@ async function renderFirstRun() {
   const running = st.phase === 'running';
   main.innerHTML = `
     <h1 class="serif">Welcome</h1>
-    <p class="sub">satprep needs the official SAT question bank before you can practise.
+    <p class="sub">ferrule needs the official SAT question bank before you can practise.
       About 3,250 questions, roughly four minutes, once.</p>
     <div class="card">
       ${running || st.phase === 'done' ? `
@@ -1029,7 +1029,7 @@ VIEWS.settings = async function renderSettings() {
     <h3>AI tutor</h3>
     <div class="card">
       <p class="sub" style="margin:0 0 6px">
-        Optional — everything else works without it. Pick a model and satprep fetches
+        Optional — everything else works without it. Pick a model and ferrule fetches
         the engine and the weights itself. Nothing to install, no terminal, no account.
       </p>
       <p class="sub" style="margin:0">
@@ -1083,7 +1083,7 @@ VIEWS.settings = async function renderSettings() {
 
     <h3>Already run Ollama, LM Studio, or a hosted API?</h3>
     <div class="card">
-      <p class="sub">Point satprep at it instead of downloading anything.</p>
+      <p class="sub">Point ferrule at it instead of downloading anything.</p>
       <div class="row">
         <select id="prov">
           ${tc.providers.map((p) => `<option value="${p.id}" ${tc.config.provider === p.id ? 'selected' : ''}>
@@ -1102,7 +1102,7 @@ VIEWS.settings = async function renderSettings() {
         <span id="tutor-result" class="muted" style="font-size:13px"></span>
       </div>
       <p class="sub" style="margin:12px 0 0">
-        Keys live in <code>~/.config/satprep/config.json</code>, owner-only, never in the database or the repo.
+        Keys live in <code>~/.config/ferrule/config.json</code>, owner-only, never in the database or the repo.
       </p>
     </div>
 

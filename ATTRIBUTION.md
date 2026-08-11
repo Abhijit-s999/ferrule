@@ -1,10 +1,10 @@
 # Attribution and sources
 
-satprep is a collation of freely available SAT resources. It wrote none of the
+ferrule is a collation of freely available SAT resources. It wrote none of the
 questions it shows you. This file records where everything comes from, under
-what terms, and what satprep does and does not do with it.
+what terms, and what ferrule does and does not do with it.
 
-**The single rule this project is built around: satprep never redistributes
+**The single rule this project is built around: ferrule never redistributes
 question content.** No questions are stored in this repository. Nothing is
 mirrored, bundled, or re-hosted. Every source is fetched at run time, over the
 public internet, into a database on the user's own machine that `.gitignore`
@@ -24,9 +24,9 @@ tool and a copyright problem.
 - **Used for:** ~3,250 official SAT questions with domain, skill and difficulty
   tags, answer keys, and College Board's own written rationales.
 - **How it is accessed:** the public educator question bank, which requires no
-  account, no login and no API key. satprep calls the same endpoint the public
+  account, no login and no API key. ferrule calls the same endpoint the public
   website calls from a browser.
-- **Terms:** the questions are the copyright of College Board. satprep does not
+- **Terms:** the questions are the copyright of College Board. ferrule does not
   redistribute them — each user fetches their own local copy.
 
 > SAT® and College Board are trademarks registered by College Board. College
@@ -46,7 +46,7 @@ questions only.
   to use the OpenSAT database for commercial purposes. This means you can
   utilize the data for your own projects or services without restriction."* The
   other restrictions in that licence cover OpenSAT's own source code, which
-  satprep does not use, copy or derive from.
+  ferrule does not use, copy or derive from.
 - **Why it is off by default:** these questions are not calibrated to real exam
   difficulty, and they carry only domain tags with no skill breakdown, so they
   cannot feed skill-level metrics. Measured overlap with the official bank is
@@ -78,13 +78,13 @@ app.
 
 - **Source:** <https://github.com/ggml-org/llama.cpp>
 - **Licence:** MIT
-- **Used for:** the local inference engine. satprep downloads an official
+- **Used for:** the local inference engine. ferrule downloads an official
   prebuilt release binary for your platform; it does not vendor or modify the
   source.
 
 ### Models
 
-satprep downloads GGUF model files from Hugging Face on request. Each model
+ferrule downloads GGUF model files from Hugging Face on request. Each model
 keeps its own licence, shown in the app before you download it:
 
 | Model | Publisher | Licence |
@@ -98,11 +98,11 @@ GGUF conversions are commonly published by community quantisers (notably
 [bartowski](https://huggingface.co/bartowski)); the underlying model licence is
 the one that governs use.
 
-No model is bundled with satprep, and none is downloaded unless you ask for it.
+No model is bundled with ferrule, and none is downloaded unless you ask for it.
 
 ---
 
-## satprep itself
+## ferrule itself
 
 The **code** is MIT licensed — see [LICENSE](LICENSE). The licence covers the
 software only, and explicitly not the questions, which are not ours to license.
@@ -113,5 +113,5 @@ software only, and explicitly not the questions, which are not ours to license.
 
 If you publish one of the sources above and want its use here changed or
 removed, open an issue. Removing a source is a small change: it is one entry in
-`satprep/sources.py`, because attribution is stored next to the code that
+`ferrule/sources.py`, because attribution is stored next to the code that
 fetches it rather than only in documentation.

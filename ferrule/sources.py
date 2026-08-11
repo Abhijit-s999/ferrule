@@ -1,11 +1,11 @@
 """Where questions come from, and what each provider allows.
 
-satprep is a collation of freely available SAT resources. Every question in the
+ferrule is a collation of freely available SAT resources. Every question in the
 database records which source it came from, and every source declares its terms
 here in one place, so attribution is a property of the data rather than a note
 in a README that drifts out of date.
 
-The hard rule: satprep never redistributes question content. Sources are
+The hard rule: ferrule never redistributes question content. Sources are
 fetched at run time into the user's own local database. See ATTRIBUTION.md.
 """
 
@@ -28,7 +28,7 @@ SOURCES = {
             "Fetched from the same endpoint the public site calls from a browser."
         ),
         "terms": (
-            "Questions are the copyright of College Board. satprep does not "
+            "Questions are the copyright of College Board. ferrule does not "
             "redistribute them: each user fetches their own local copy. "
             "SAT and College Board are trademarks registered by College Board, "
             "which does not endorse and is not affiliated with this project."
@@ -53,7 +53,7 @@ SOURCES = {
             "OpenSAT's licence grants database use explicitly: \"Users are free "
             "to use the OpenSAT database for commercial purposes... without "
             "restriction.\" The separate restrictions in that licence apply to "
-            "OpenSAT's own source code, which satprep does not use or copy."
+            "OpenSAT's own source code, which ferrule does not use or copy."
         ),
         "why": (
             "Community-written practice questions, distinct from the official "

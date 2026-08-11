@@ -1,4 +1,4 @@
-# satprep
+# ferrule
 
 Free, adaptive SAT practice built on openly available question banks, with
 analytics broken down by **skill and difficulty**, and an optional AI tutor that
@@ -13,15 +13,41 @@ you explicitly choose a hosted AI provider.
 
 ## Install
 
-**Desktop app** (recommended — no terminal at all):
+Grab the installer for your platform from
+[Releases](../../releases). **Nothing else is required** — Python is bundled, so
+there is no runtime to install and no terminal to open.
 
-```bash
-git clone <this repo> && cd satprep
-npm install && npm start
-```
+| Platform | File | How |
+| --- | --- | --- |
+| Windows | `ferrule-Setup-*.exe` | Double-click, choose a folder, done |
+| macOS | `ferrule-*.dmg` | Open, drag to Applications |
+| Linux | `ferrule-*.AppImage` | `chmod +x` then run |
+| Linux (Debian/Ubuntu) | `ferrule_*.deb` | `sudo apt install ./ferrule_*.deb` |
 
 On first launch the app offers to download the question bank for you. That is
 the whole setup.
+
+<details>
+<summary>Running from source instead</summary>
+
+```bash
+git clone https://github.com/OWNER/ferrule && cd ferrule
+npm install && npm start
+```
+
+A source checkout uses your system Python 3.9+ rather than a bundled one. The
+backend has **no Python dependencies** — standard library only.
+
+To build the installers yourself:
+
+```bash
+npm run backend      # freeze the Python backend for THIS platform
+npm run build:linux  # or build:win / build:mac
+```
+
+PyInstaller cannot cross-compile, so each platform's installer must be built on
+that platform. `.github/workflows/release.yml` does all three on tag push.
+</details>
 
 To put it in your application launcher (Linux, any desktop):
 
@@ -30,9 +56,9 @@ To put it in your application launcher (Linux, any desktop):
 ./scripts/install-desktop.sh --uninstall  # removes them again
 ```
 
-That writes a desktop entry, a `satprep` launcher on your PATH, and icons at
+That writes a desktop entry, a `ferrule` launcher on your PATH, and icons at
 every standard size — all under `~/.local/share`, so it needs no root. After
-that, satprep appears in your launcher like any installed program, and the
+that, ferrule appears in your launcher like any installed program, and the
 compositor matches its window to the entry, so the taskbar shows the real icon
 rather than a generic Electron one.
 
@@ -47,8 +73,8 @@ npm run build:mac      # dmg
 **Command line**, if you prefer it:
 
 ```bash
-./satprep.py fetch     # download the question bank (~4 min, once)
-./satprep.py serve     # then open http://localhost:8733
+./ferrule.py fetch     # download the question bank (~4 min, once)
+./ferrule.py serve     # then open http://localhost:8733
 ```
 
 Requires Python 3.9+. The backend has **no Python dependencies** — standard
@@ -88,7 +114,7 @@ than "you're bad at algebra":
 
 ### An AI tutor that sets itself up
 
-Click a model. satprep downloads the inference engine and the model, starts the
+Click a model. ferrule downloads the inference engine and the model, starts the
 server, and wires it up. **No Ollama, no LM Studio, no terminal, no GGUF
 knowledge, no accounts.**
 
@@ -104,9 +130,9 @@ knowledge, no accounts.**
 - The tutor gets the question, your answer, and the official rationale as ground
   truth, and is told to explain the *method* rather than restate the answer.
 
-Already have Ollama, LM Studio, llama.cpp, or a hosted API? Point satprep at it
+Already have Ollama, LM Studio, llama.cpp, or a hosted API? Point ferrule at it
 in Settings instead. Any OpenAI-compatible endpoint works, plus Anthropic's API
-natively. API keys are stored in `~/.config/satprep/config.json` with
+natively. API keys are stored in `~/.config/ferrule/config.json` with
 owner-only permissions — never in the database, never in the repo.
 
 **The tutor is entirely optional.** Everything else works without it.
@@ -115,7 +141,7 @@ owner-only permissions — never in the database, never in the repo.
 
 ## Question sources
 
-satprep collates free resources; it wrote none of the questions. Full detail and
+ferrule collates free resources; it wrote none of the questions. Full detail and
 terms are in **[ATTRIBUTION.md](ATTRIBUTION.md)**.
 
 | Source | Questions | Default | Notes |
@@ -124,7 +150,7 @@ terms are in **[ATTRIBUTION.md](ATTRIBUTION.md)**.
 | [OpenSAT](https://github.com/Anas099X/OpenSAT) | ~2,340 | off | Community-written. Licence explicitly permits database use. |
 | [OnePrep](https://www.oneprep.com/) | — | — | Linked and credited. **Deliberately not fetched** — see below. |
 
-**satprep never redistributes question content.** This repository contains no
+**ferrule never redistributes question content.** This repository contains no
 questions. Everything is fetched at run time into a local database that
 `.gitignore` keeps out of version control. If you fork this, keep that rule.
 
@@ -149,7 +175,7 @@ practice tests."*
 
 Drill those here and your Bluebook scores become a memory check instead of a
 measurement — and that is your only realistic gauge of where you stand. **So
-satprep holds them back by default**, leaving ~1,233 official questions to
+ferrule holds them back by default**, leaving ~1,233 official questions to
 practise on, which is far more than anyone gets through in a few weeks.
 
 ---
@@ -158,15 +184,15 @@ practise on, which is far more than anyone gets through in a few weeks.
 
 | Command | What it does |
 | --- | --- |
-| `./satprep.py fetch` | Download the bank. Resumable. `--with-opensat` adds the community set. |
-| `./satprep.py serve` | Run the backend. `--host 0.0.0.0` to practise from your phone. |
-| `./satprep.py stats` | Per-skill breakdown in the terminal. |
-| `./satprep.py plan --minutes 45` | A concrete "do this now" list. |
-| `./satprep.py sources` | List sources and their terms; `--enable` / `--disable`. |
-| `./satprep.py reset` | Clear your practice record, keep the questions. |
+| `./ferrule.py fetch` | Download the bank. Resumable. `--with-opensat` adds the community set. |
+| `./ferrule.py serve` | Run the backend. `--host 0.0.0.0` to practise from your phone. |
+| `./ferrule.py stats` | Per-skill breakdown in the terminal. |
+| `./ferrule.py plan --minutes 45` | A concrete "do this now" list. |
+| `./ferrule.py sources` | List sources and their terms; `--enable` / `--disable`. |
+| `./ferrule.py reset` | Clear your practice record, keep the questions. |
 
-`--db PATH` or `SATPREP_DB` relocates the database from
-`~/.local/share/satprep/satprep.db`. `fetch --insecure` skips TLS verification
+`--db PATH` or `FERRULE_DB` relocates the database from
+`~/.local/share/ferrule/ferrule.db`. `fetch --insecure` skips TLS verification
 on networks that intercept it.
 
 Keyboard: `A`–`D` or `1`–`4` to answer, `Enter` to submit a grid-in and to move
@@ -202,9 +228,9 @@ test suite is the first thing this needs before others depend on it.
 ## How it works
 
 ```
-satprep.py            CLI entry point
+ferrule.py            CLI entry point
 desktop/main.js       Electron shell: spawns the backend, opens the window
-satprep/
+ferrule/
   fetch.py            multi-source downloader
   sources.py          every source's terms and attribution, in one place
   db.py               SQLite schema, migrations, provenance, de-duplication
@@ -225,7 +251,7 @@ the metrics:
   casing variants on fetch.
 - OpenSAT's `id` field is **not unique** — 2,474 questions share 1,200 ids
   (`random_id_a1` appears 91 times). Keying on it silently discards half the
-  bank, so satprep keys on a content hash instead.
+  bank, so ferrule keys on a content hash instead.
 
 Maths renders as MathML, which every current browser handles natively — no
 KaTeX, no MathJax, no build step. Chart colours were run through a

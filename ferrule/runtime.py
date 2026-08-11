@@ -1,7 +1,7 @@
 """A local model that sets itself up.
 
 The point of this module is that a student who has never heard of Ollama, GGUF
-or quantisation can click one button and end up with a working tutor. satprep
+or quantisation can click one button and end up with a working tutor. ferrule
 downloads the inference engine, downloads the model, starts the server and
 points the tutor at it. No terminal, no separate install, no configuration.
 
@@ -32,13 +32,13 @@ import zipfile
 from . import tutor
 
 DATA_DIR = os.path.join(
-    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "satprep"
+    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "ferrule"
 )
 ENGINE_DIR = os.path.join(DATA_DIR, "engine")
 MODEL_DIR = os.path.join(DATA_DIR, "models")
 
 LLAMA_RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
-UA = "satprep/1.0"
+UA = "ferrule/1.0"
 
 # --------------------------------------------------------------------------
 # Model catalogue
@@ -143,6 +143,27 @@ MODELS = [
         ],
         "cons": [
             "Maths is weaker than Qwen2.5 7B — prefer that one for the Math section",
+        ],
+    },
+    {
+        "id": "bonsai-27b",
+        "name": "Bonsai 27B (ternary)",
+        "size_gb": 3.8,
+        "vram_gb": 4.6,
+        "params": "27B",
+        "recommended": False,
+        "best_for": "The most capable model that still fits 8 GB",
+        "repo": "prism-ml/Bonsai-27B-gguf",
+        "file": "Bonsai-27B-Q1_0.gguf",
+        "licence": "See model card",
+        "pros": [
+            "A 27B model in 3.8 GB — smaller on disk than most 7B downloads",
+            "Far more capable than any 7-9B option here, and still fits an 8 GB card",
+            "Best reasoning available locally without a 16 GB GPU",
+        ],
+        "cons": [
+            "Ternary weights trade some precision for size; check its maths",
+            "Slower per token than a 7B — noticeable, not painful",
         ],
     },
     {
@@ -682,7 +703,7 @@ def reap_stale_server():
         return None
 
     # Only kill it if it really is our model server, never a recycled pid.
-    if "llama-server" not in cmdline or "satprep" not in cmdline:
+    if "llama-server" not in cmdline or "ferrule" not in cmdline:
         _clear_pid()
         return None
 
