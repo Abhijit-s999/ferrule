@@ -6,12 +6,12 @@
   "main": "desktop/main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder",
-    "build:linux": "electron-builder --linux AppImage deb",
-    "build:win": "electron-builder --win nsis",
-    "build:mac": "electron-builder --mac dmg",
+    "build": "electron-builder --publish never",
+    "build:linux": "electron-builder --linux AppImage deb --publish never",
+    "build:win": "electron-builder --win nsis --publish never",
+    "build:mac": "electron-builder --mac dmg --publish never",
     "backend": "./scripts/build-backend.sh",
-    "dist": "./scripts/build-backend.sh && electron-builder"
+    "dist": "./scripts/build-backend.sh && electron-builder --publish never"
   },
   "devDependencies": {
     "electron": "^33.0.0",
