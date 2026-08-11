@@ -141,6 +141,10 @@ def fetch_index(conn, assessment=99, insecure=False):
     if merged:
         print(f"  merged {merged} skill-name casing variant(s)")
 
+    unusable = db.flag_unanswerable(conn)
+    if unusable:
+        print(f"  held back {unusable} question(s) that reference a figure the bank omits")
+
     flagged = db.mark_practice_test_items(conn, practice_test_ids(lookup))
     print(f"  flagged {flagged} questions as also appearing in full-length practice tests")
     return total

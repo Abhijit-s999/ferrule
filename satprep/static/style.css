@@ -650,6 +650,40 @@ td.num, .num {
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* ---------------------------------------------------------------- tutor chat */
+
+.chat { margin-top: 16px; border-top: 1px solid var(--rule); padding-top: 12px; }
+.chat-toggle {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: none; border: 0; padding: 4px 0; cursor: pointer;
+  color: var(--ink-3); font: inherit; font-size: 12.5px;
+  transition: color var(--t-fast) var(--ease);
+}
+.chat-toggle:hover { color: var(--ink); }
+.chat-toggle .muted { font-size: 11px; }
+
+/* Collapse by animating grid rows: the panel opens smoothly without needing a
+   hard-coded height. */
+.chat-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--t-slow) var(--ease); }
+.chat.open .chat-body { grid-template-rows: 1fr; }
+.chat-body > div { overflow: hidden; }
+
+.chat-log { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 10px;
+            max-height: 300px; overflow-y: auto; }
+.msg { display: grid; grid-template-columns: 44px 1fr; gap: 10px; font-size: 14px; }
+.msg .who {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-3); padding-top: 3px; font-weight: 600;
+}
+.msg .what { line-height: 1.62; white-space: pre-wrap; }
+.msg.user .what { color: var(--ink-2); }
+.msg.assistant .what {
+  border-left: 2px solid var(--rule-2); padding-left: 11px;
+}
+
+.chat-form { display: flex; gap: 8px; }
+.chat-form input { flex: 1; }
+
 /* ---------------------------------------------------------------- bank */
 
 .bankbar {
@@ -779,9 +813,48 @@ math mfrac, math msqrt, math mroot, math msup, math msub { font-size: 1.05em; }
 }
 .stimulus td, .stimulus th, .stem td, .stem th,
 .rationale td, .rationale th { border: 1px solid var(--rule-2); padding: 6px 11px; }
-.stimulus img, .stem img, .choice img, .rationale img,
-.stimulus svg, .stem svg { max-width: 100%; height: auto; }
-.stimulus figure, .stem figure { margin: 12px 0; overflow-x: auto; }
+.stimulus img, .stem img, .choice img, .rationale img { max-width: 100%; height: auto; }
+.stimulus figure, .stem figure, .rationale figure { margin: 14px 0; overflow-x: auto; }
+
+/* ---- diagrams -------------------------------------------------------------
+   College Board ships these as inline SVG drawn in black ink on nothing:
+   stroke="#000000", no background, no currentColor on the linework. On a dark
+   page that is black on black.
+
+   They get a paper plate in BOTH themes rather than a dark-mode inversion.
+   Inverting looked tempting — 92% of the ink is greyscale — but the remaining
+   8% is real data colour (#117766 teal, #116600 green) that a question can
+   refer to by name, and flipping teal to pink would make such a question
+   unanswerable. Inversion would also fight the 2,445 explicit white fills and
+   the 727 elements that already use currentColor.
+
+   `color` is set on the plate so those currentColor elements resolve to dark
+   ink rather than inheriting the page's light text. */
+
+.stimulus figure:has(svg), .stem figure:has(svg),
+.rationale figure:has(svg), .choice figure:has(svg),
+.stimulus > svg, .stem > svg, .rationale > svg {
+  background: #fdfdfb;
+  color: #17161a;
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  padding: 14px 12px;
+  margin: 14px 0;
+  display: block;
+  overflow-x: auto;
+}
+
+/* Tables inside a figure are ordinary markup and already follow the theme —
+   they must not get the plate treatment. */
+.stimulus figure:has(table), .stem figure:has(table),
+.rationale figure:has(table) { background: none; border: 0; padding: 0; }
+
+figure svg, .stimulus > svg, .stem > svg, .rationale > svg {
+  max-width: 100%; height: auto; display: block; margin: 0 auto;
+}
+
+/* Long descriptions some diagrams carry for screen readers. */
+figure figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
 
 @media (max-width: 640px) {
   main { padding: 22px 14px 76px; }

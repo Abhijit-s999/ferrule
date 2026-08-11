@@ -348,6 +348,76 @@ def health(cfg=None):
                 "setup": provider.get("setup", "")}
 
 
+def chat_messages(question, detail, history, answered):
+    """Build a running conversation about the question in front of you.
+
+    The important rule is the split: while the question is still open the
+    tutor may hint but must not reveal the answer, because handing it over is
+    exactly the thing that stops you learning. Once you have answered, the
+    whole rationale is fair game.
+    """
+    opts = "\n".join(
+        f"  {o['letter']}. {_strip(o['content'])}" for o in question.get("options", [])
+    )
+    context = [
+        f"Section: {question.get('test_name')}",
+        f"Skill: {question.get('skill')} ({question.get('difficulty')})",
+    ]
+    if question.get("stimulus"):
+        context.append(f"\nPassage:\n{_strip(question['stimulus'])}")
+    context.append(f"\nQuestion:\n{_strip(question.get('stem') or '')}")
+    if opts:
+        context.append(f"\nChoices:\n{opts}")
+
+    if answered:
+        context.append(
+            f"\nCorrect answer: {', '.join(str(k) for k in detail.get('correct_answer', []))}"
+        )
+        if detail.get("rationale"):
+            context.append(f"\nOfficial explanation:\n{_strip(detail['rationale'])}")
+        rule = (
+            "The student has already answered, so you may discuss the answer and "
+            "the official explanation freely. Never contradict that explanation."
+        )
+    else:
+        rule = (
+            "The student is STILL WORKING on this question. You know the answer but "
+            "you must NOT reveal it, name the correct choice, or eliminate choices "
+            "for them. Nudge: ask what they have tried, point at the relevant part "
+            "of the passage, name the concept, or give the next single step. If they "
+            "ask outright for the answer, tell them to answer first and you will "
+            "explain it fully afterwards."
+        )
+
+    system = (
+        "You are an SAT tutor sitting beside a student, answering their questions "
+        "about the problem in front of them.\n\n" + rule + "\n\n"
+        "Be brief — two or three sentences unless they ask for more. "
+        "No markdown, no asterisks, no LaTeX; write maths plainly like y = 15w^2."
+    )
+
+    msgs = [{"role": "system", "content": system},
+            {"role": "user", "content": "\n".join(context)}]
+    msgs.extend(
+        {"role": m["role"], "content": m["content"]}
+        for m in (history or [])
+        if m.get("role") in ("user", "assistant") and m.get("content")
+    )
+    return msgs
+
+
+def stream_chat(question, detail, history, answered, cfg=None):
+    cfg = cfg or load_config()
+    if not cfg.get("model"):
+        raise TutorError("No model selected. Pick one in Settings.")
+    provider, base = resolve_endpoint(cfg)
+    messages = chat_messages(question, detail, history, answered)
+    if provider["id"] == "anthropic":
+        yield from _stream_anthropic(base, cfg, messages)
+    else:
+        yield from _stream_openai(base, cfg, messages)
+
+
 def _messages_for(question, detail, user_response, mode):
     """Build the prompt. The official rationale is given as ground truth."""
     opts = "\n".join(

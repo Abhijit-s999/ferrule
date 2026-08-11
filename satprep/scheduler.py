@@ -36,7 +36,9 @@ def _source_filter(conn, alias="q"):
     """
     ids = sources.enabled_ids(conn)
     placeholders = ",".join("?" * len(ids))
-    clause = f"AND {alias}.source IN ({placeholders})"
+    # `unusable` questions reference a figure the bank never shipped; they stay
+    # browsable but must never be served as practice.
+    clause = f"AND {alias}.source IN ({placeholders}) AND {alias}.unusable = 0"
     params = list(ids)
 
     cutoff = min_created(conn)

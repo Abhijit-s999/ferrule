@@ -205,7 +205,13 @@ VIEWS.home = async function renderHome() {
     </div>`;
 
   wireVintage(VIEWS.home);
-  $('#go').onclick = () => startSet({ test: $('#pick-test').value, n: $('#pick-n').value });
+  // Read the selections now: the tutor gate replaces this markup, so reading
+  // them inside the callback would find nothing.
+  $('#go').onclick = () => {
+    const test = $('#pick-test').value;
+    const n = $('#pick-n').value;
+    withTutorChoice(() => startSet({ test, n }));
+  };
 };
 
 async function renderFirstRun() {
@@ -278,6 +284,7 @@ VIEWS.practice = function renderPractice() {
   state.answered = null;
   state.t0 = Date.now();
   state.eliminated = new Set();
+  chat.history = [];   // the conversation is about *this* question only
 
   const isSpr = q.qtype === 'spr';
   main.innerHTML = `
@@ -301,6 +308,7 @@ VIEWS.practice = function renderPractice() {
                </button>`).join('')}
            </div>`}
       <div id="verdict"></div>
+      ${chatPanel()}
     </div>
     <div class="row">
       <button class="quiet" id="skip">Skip</button>
@@ -313,6 +321,7 @@ VIEWS.practice = function renderPractice() {
     </div>`;
 
   tickClock();
+  wireChat(() => state.queue[state.idx], () => !!state.answered);
   if (isSpr) $('#submit').onclick = () => submit($('#spr').value);
   else $$('.choice').forEach((b) => (b.onclick = (e) => {
     if (e.altKey) return toggleEliminate(b);
@@ -361,6 +370,7 @@ async function submit(response) {
     <div id="tutor-out"></div>`;
   $('#next').onclick = next;
   $('#ask').onclick = () => askTutor(q, response, res.correct);
+  const hint = $('#chathint'); if (hint) hint.textContent = '';
   $('#next').focus();
 }
 
@@ -535,7 +545,7 @@ VIEWS.bank = async function renderBank() {
     state.bank.page = 1; VIEWS.bank();
   };
   $('#bsince').onchange = (e) => setF('since', e.target.value);
-  $('#flowgo').onclick = flowStart;
+  $('#flowgo').onclick = () => withTutorChoice(flowStart);
 
   let deb;
   const search = $('#bq');
@@ -585,6 +595,182 @@ function qCard(q, i) {
         </div>
       </div></div></div>
     </div>`;
+}
+
+// ---------------------------------------------------------------- tutor gate
+
+/* Asked once per app run, before the first session: do you want a tutor, and
+ * which one? Loading a 5 GB model is not a decision to make on someone's
+ * behalf, and it is a bad surprise on a modest machine. "Not this time" is a
+ * first-class answer and is remembered for the run. */
+let tutorAsked = false;
+
+async function withTutorChoice(startFn) {
+  if (tutorAsked) return startFn();
+  const rt = await api('/api/runtime/status');
+  if (rt.selected || rt.running) { tutorAsked = true; return startFn(); }
+
+  const installed = new Set(rt.installed_models);
+  const fits = (m) => rt.vram_gb == null ? '' :
+    m.vram_gb <= rt.vram_gb - 1 ? '<span class="pill fit">fits</span>' :
+    m.vram_gb <= rt.vram_gb + 0.5 ? '<span class="pill tight">tight</span>' :
+    '<span class="pill toobig">too big</span>';
+
+  const ordered = [...rt.models].sort((a, b) =>
+    (installed.has(b.id) - installed.has(a.id)) || (b.recommended - a.recommended));
+
+  main.innerHTML = `
+    <h1 class="serif">Study with a tutor?</h1>
+    <p class="sub">
+      A local model can answer your questions while you work — nothing leaves your
+      machine. It loads only when you first ask something and unloads when you stop,
+      so it is not sitting on your ${rt.vram_gb ? 'GPU' : 'CPU'} while you read.
+      You can skip this and turn it on later in Settings.
+    </p>
+    <div class="card">
+      <button class="primary" id="notutor" style="width:100%;justify-content:center">
+        Continue without a tutor
+      </button>
+    </div>
+    <h3>Or pick a model</h3>
+    <div class="models stagger">
+      ${ordered.map((m) => `
+        <div class="model ${m.recommended ? 'rec' : ''}">
+          <div class="model-head">
+            <div><strong>${esc(m.name)}</strong>
+              ${m.recommended ? '<span class="pill rec">recommended</span>' : ''}
+              ${installed.has(m.id) ? '<span class="pill ok">downloaded</span>' : ''}
+              ${fits(m)}
+            </div>
+            <div class="muted" style="font-size:12px;margin-top:3px">
+              ${m.params} · ${gb(m.size_gb)} · ${esc(m.best_for)}
+            </div>
+          </div>
+          <div class="model-body">
+            <ul class="pros">${m.pros.slice(0, 2).map((p) => `<li>${esc(p)}</li>`).join('')}</ul>
+            <ul class="cons">${m.cons.slice(0, 2).map((c) => `<li>${esc(c)}</li>`).join('')}</ul>
+          </div>
+          <button class="primary" data-pick="${m.id}">
+            ${installed.has(m.id) ? 'Use this' : `Download &amp; use · ${gb(m.size_gb)}`}
+          </button>
+        </div>`).join('')}
+    </div>`;
+
+  $('#notutor').onclick = () => { tutorAsked = true; startFn(); };
+  $$('[data-pick]').forEach((b) => (b.onclick = async () => {
+    tutorAsked = true;
+    await post('/api/runtime/start', { model_id: b.dataset.pick });
+    // Downloading runs in the background; start practising immediately.
+    refreshChip();
+    startFn();
+  }));
+}
+
+// ---------------------------------------------------------------- tutor chat
+
+/* A conversation about the question you are looking at. Before you answer the
+ * tutor hints only; afterwards it explains fully. The server enforces that
+ * split — the client cannot ask it to give the game away early. */
+const chat = { history: [], open: false, busy: false };
+
+function chatPanel() {
+  return `
+    <div class="chat ${chat.open ? 'open' : ''}" id="chat">
+      <button class="chat-toggle" id="chattoggle">
+        ${I.spark}<span>${chat.open ? 'Hide tutor' : 'Ask the tutor'}</span>
+        <span class="muted" id="chathint"></span>
+      </button>
+      <div class="chat-body">
+        <div>
+          <div class="chat-log" id="chatlog">${chat.history.map(msgHTML).join('')}</div>
+          <form class="chat-form" id="chatform">
+            <input type="text" id="chatinput" autocomplete="off"
+                   placeholder="Ask about this question…">
+            <button class="primary" type="submit" ${chat.busy ? 'disabled' : ''}>Send</button>
+          </form>
+        </div>
+      </div>
+    </div>`;
+}
+
+const msgHTML = (m) =>
+  `<div class="msg ${m.role}"><span class="who">${m.role === 'user' ? 'You' : 'Tutor'}</span>
+     <div class="what">${m.role === 'user' ? esc(m.content) : tutorText(m.content)}</div></div>`;
+
+function wireChat(getQuestion, isAnswered) {
+  const toggle = $('#chattoggle');
+  if (!toggle) return;
+  const hint = $('#chathint');
+  if (hint) hint.textContent = isAnswered() ? '' : 'hints only until you answer';
+
+  toggle.onclick = () => {
+    chat.open = !chat.open;
+    $('#chat').classList.toggle('open', chat.open);
+    toggle.querySelector('span').textContent = chat.open ? 'Hide tutor' : 'Ask the tutor';
+    if (chat.open) setTimeout(() => $('#chatinput')?.focus(), 120);
+  };
+
+  $('#chatform').onsubmit = async (e) => {
+    e.preventDefault();
+    const input = $('#chatinput');
+    const text = input.value.trim();
+    if (!text || chat.busy) return;
+    input.value = '';
+    chat.busy = true;
+    chat.history.push({ role: 'user', content: text });
+    chat.history.push({ role: 'assistant', content: '' });
+    const log = $('#chatlog');
+    log.innerHTML = chat.history.map(msgHTML).join('');
+    log.scrollTop = log.scrollHeight;
+    const bubble = log.lastElementChild.querySelector('.what');
+    bubble.innerHTML = '<span class="caret"></span>';
+
+    let res;
+    try {
+      res = await fetch('/api/tutor/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          external_id: getQuestion().external_id,
+          answered: isAnswered(),
+          history: chat.history.slice(0, -1),
+        }),
+      });
+    } catch {
+      bubble.textContent = 'Could not reach the tutor.';
+      chat.busy = false; return;
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', text2 = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts) {
+        const line = p.trim();
+        if (!line.startsWith('data:')) continue;
+        let msg; try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
+        if (msg.error) {
+          bubble.innerHTML = `${esc(msg.error)} <button class="ghost" style="margin-top:8px"
+            onclick="document.querySelector('[data-view=settings]').click()">Settings</button>`;
+          chat.busy = false; refreshChip(); return;
+        }
+        if (msg.status) bubble.innerHTML = `<span class="muted">${esc(msg.status)}</span><span class="caret"></span>`;
+        if (msg.delta) {
+          text2 += msg.delta;
+          bubble.innerHTML = tutorText(text2) + '<span class="caret"></span>';
+          log.scrollTop = log.scrollHeight;
+        }
+      }
+    }
+    chat.history[chat.history.length - 1].content = text2;
+    bubble.innerHTML = tutorText(text2);
+    chat.busy = false;
+    refreshChip();
+    $('#chatinput')?.focus();
+  };
 }
 
 // ---------------------------------------------------------------- flow
@@ -644,6 +830,7 @@ VIEWS.flow = function () { if (flow.current) flowRender(); };
 function flowNext() {
   clearTimeout(flow.timer);
   flow.answered = null;
+  chat.history = [];
   flow.current = flow.queue.shift();
   if (!flow.current) { flowFill().then(() => flow.queue.length ? flowNext() : flowExit()); return; }
   flow.seen.push(flow.current.external_id);
@@ -676,6 +863,7 @@ function flowRender() {
                </button>`).join('')}
            </div>`}
       <div id="fv"></div>
+      ${chatPanel()}
       <div class="flowfoot">
         <span>${isSpr ? '<span class="kbd">Enter</span> answer' : '<span class="kbd">A</span>–<span class="kbd">D</span>'}
           · <span class="kbd">Space</span> next · <span class="kbd">Esc</span> exit</span>
@@ -684,6 +872,7 @@ function flowRender() {
       </div>
     </div>`;
 
+  wireChat(() => flow.current, () => !!flow.answered);
   if (isSpr) $('#spr').focus();
   else $$('.choice').forEach((b) => (b.onclick = () => flowAnswer(b.dataset.letter)));
 }
