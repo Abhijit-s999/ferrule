@@ -137,7 +137,9 @@ terms are in **[ATTRIBUTION.md](ATTRIBUTION.md)**.
 | --- | --- | --- | --- |
 | [College Board SAT Suite Question Bank](https://satsuiteeducatorquestionbank.collegeboard.org/) | ~3,250 | **on** | Official. Domain + skill + difficulty tags, official rationales. |
 | [OpenSAT](https://github.com/Anas099X/OpenSAT) | ~2,340 | off | Community-written. Licence explicitly permits database use. |
-| [OnePrep](https://www.oneprep.com/) | — | — | Linked and credited. **Deliberately not fetched** — see below. |
+
+Sources are only added when their licence or terms clearly permit programmatic
+access — check `robots.txt` and the licence before proposing one.
 
 **ferrule never redistributes question content.** This repository contains no
 questions. Everything is fetched at run time into a local database that
@@ -148,10 +150,6 @@ real exam difficulty and carry only domain tags, so they cannot feed skill-level
 metrics. Turn them on for extra volume — accuracy is always reported per source,
 so the official numbers stay clean either way.
 
-**OnePrep is not scraped.** Its `robots.txt` disallows automated access to its
-question API, separately disallows the `ClaudeBot` and `anthropic-ai` agents,
-and asserts `Content-Signal: ai-train=no`. It's a genuinely good free question
-bank — go use it directly, at their site, where they get the credit.
 
 ---
 
