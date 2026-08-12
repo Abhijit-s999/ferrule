@@ -393,8 +393,65 @@ select:hover, input:hover { border-color: var(--ink-3); }
 .choice.wrong .letter { background: var(--bad); border-color: var(--bad); color: #fff; }
 .choice:disabled { cursor: default; }
 .choice p { margin: 0; }
-.choice.eliminated { opacity: .38; }
-.choice.eliminated span:last-child { text-decoration: line-through; }
+/* ---- cross-out ------------------------------------------------------------
+   A ruled-out choice stays readable but is clearly out of the running: struck
+   through and faded, not hidden. You can still pick it — sometimes you rule
+   something out and change your mind, and the tool should not stop you. */
+
+.choice { position: relative; padding-right: 42px; }
+.choice.eliminated { opacity: .45; }
+.choice.eliminated .letter { text-decoration: line-through; }
+.choice.eliminated > span:not(.letter):not(.strike) { text-decoration: line-through; }
+
+.strike {
+  position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
+  width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center;
+  font: 600 15px var(--sans); line-height: 1;
+  color: var(--ink-3); border: 1px solid transparent;
+  opacity: 0; cursor: pointer;
+  transition: opacity var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+              border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.choice:hover .strike, .choice:focus-within .strike { opacity: 1; }
+.strike:hover { color: var(--bad); border-color: var(--bad); background: var(--bad-bg); }
+.choice.eliminated .strike { opacity: 1; color: var(--bad); border-color: var(--rule-2); }
+
+/* ---- highlighting ---------------------------------------------------------
+   Yellow on paper is unreadable on a dark ground, so the mark is a wash of the
+   accent tone with an underline, which survives both themes. */
+
+mark.hl {
+  background: color-mix(in srgb, #ffd54a 42%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+:root:not([data-theme="light"]) mark.hl {
+  background: color-mix(in srgb, #ffd54a 22%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, #ffd54a 55%, transparent);
+}
+
+.hlbar {
+  position: absolute; z-index: 60;
+  transform: translate(-50%, 0) scale(.96);
+  display: flex; gap: 2px; padding: 3px;
+  background: var(--surface); border: 1px solid var(--rule-2);
+  border-radius: var(--r); box-shadow: var(--shadow-lg);
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.hlbar.on { opacity: 1; pointer-events: auto; transform: translate(-50%, 0) scale(1); }
+.hlbar button {
+  border: 0; background: none; color: var(--ink); cursor: pointer;
+  font: inherit; font-size: 12.5px; padding: 5px 10px; border-radius: var(--r-sm);
+  white-space: nowrap;
+}
+.hlbar button:hover { background: var(--surface-2); }
+
+.stimulus, .stem { cursor: text; }
 
 .spr-entry { display: flex; gap: 9px; margin-top: 2px; }
 .spr-entry input { flex: 1; font-family: var(--mono); font-size: 16px; }
@@ -897,3 +954,14 @@ figure figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
   .clock { font-size: 22px; }
   .hide-sm { display: none; }
 }
+
+/* Zoom readout, shown briefly when the zoom level changes. */
+.zoomtoast {
+  position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(6px);
+  z-index: 90; padding: 6px 14px; border-radius: 20px;
+  background: var(--ink); color: var(--paper);
+  font: 600 13px var(--mono); letter-spacing: .02em;
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--t) var(--ease), transform var(--t) var(--ease);
+}
+.zoomtoast.on { opacity: .92; transform: translateX(-50%) translateY(0); }

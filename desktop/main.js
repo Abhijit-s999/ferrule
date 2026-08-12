@@ -91,13 +91,23 @@ function waitForServer(p, timeoutMs = 40000) {
 }
 
 /* Released builds ship the backend frozen into a single executable, so an
- * installed copy needs no Python at all. A source checkout has no such binary
- * and falls back to the interpreter, which is what developers want anyway. */
+ * installed copy needs no Python at all.
+ *
+ * A source checkout must NEVER use that executable, even when one is lying
+ * around in dist/ from a local `npm run dist`. The frozen binary embeds a
+ * snapshot of the frontend taken at build time, so running it in a checkout
+ * silently serves stale HTML/CSS/JS: you edit the source, reload, and see no
+ * change, with nothing to indicate why. A checkout runs live source; only a
+ * packaged app runs the bundle. */
+function isSourceCheckout() {
+  return fs.existsSync(path.join(ROOT, 'ferrule.py'));
+}
+
 function findBundledBackend() {
+  if (isSourceCheckout()) return null;
   const exe = process.platform === 'win32' ? 'ferrule-backend.exe' : 'ferrule-backend';
   const candidates = [
     path.join(process.resourcesPath || '', 'backend', exe),
-    path.join(ROOT, 'dist', 'backend', exe),
     path.join(ROOT, 'backend', exe),
   ];
   return candidates.find((p) => p && fs.existsSync(p)) || null;
@@ -145,6 +155,73 @@ async function startBackend() {
   await waitForServer(port);
 }
 
+/* Zoom.
+ *
+ * Menu roles alone are not enough here: the menu bar is auto-hidden, and long
+ * reading passages are the whole point of the app, so making the text bigger
+ * has to be a first-class, always-available action. Bound directly on the
+ * webContents so it works regardless of the menu, and remembered between runs
+ * — nobody wants to re-zoom every launch. */
+const ZOOM_FILE = path.join(app.getPath('userData'), 'zoom.json');
+const ZOOM_STEPS = [0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5];
+
+function readZoom() {
+  try {
+    const v = JSON.parse(fs.readFileSync(ZOOM_FILE, 'utf8')).factor;
+    return typeof v === 'number' && v > 0.3 && v < 4 ? v : 1;
+  } catch { return 1; }
+}
+
+function writeZoom(factor) {
+  try {
+    fs.mkdirSync(path.dirname(ZOOM_FILE), { recursive: true });
+    fs.writeFileSync(ZOOM_FILE, JSON.stringify({ factor }));
+  } catch { /* zoom is not worth failing over */ }
+}
+
+function installZoom(win) {
+  const wc = win.webContents;
+  const apply = (factor) => {
+    const f = Math.min(2.5, Math.max(0.67, factor));
+    wc.setZoomFactor(f);
+    writeZoom(f);
+    // A brief readout, so it is obvious the key did something.
+    wc.executeJavaScript(
+      `(() => { let e = document.getElementById('zoomtoast');
+         if (!e) { e = document.createElement('div'); e.id = 'zoomtoast';
+                   e.className = 'zoomtoast'; document.body.appendChild(e); }
+         e.textContent = '${Math.round(f * 100)}%';
+         e.classList.add('on');
+         clearTimeout(window.__zt);
+         window.__zt = setTimeout(() => e.classList.remove('on'), 900); })()`
+    ).catch(() => {});
+  };
+
+  const step = (dir) => {
+    const cur = wc.getZoomFactor();
+    const i = ZOOM_STEPS.reduce(
+      (best, v, idx) => (Math.abs(v - cur) < Math.abs(ZOOM_STEPS[best] - cur) ? idx : best), 0);
+    apply(ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, Math.max(0, i + dir))]);
+  };
+
+  wc.on('did-finish-load', () => wc.setZoomFactor(readZoom()));
+
+  wc.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const mod = process.platform === 'darwin' ? input.meta : input.control;
+    if (!mod) return;
+    const k = input.key;
+    if (k === '=' || k === '+' || k === 'Add') { event.preventDefault(); step(+1); }
+    else if (k === '-' || k === '_' || k === 'Subtract') { event.preventDefault(); step(-1); }
+    else if (k === '0') { event.preventDefault(); apply(1); }
+  });
+
+  wc.on('zoom-changed', (event, direction) => {   // ctrl + mouse wheel
+    event.preventDefault();
+    step(direction === 'in' ? +1 : -1);
+  });
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1180,
@@ -158,6 +235,7 @@ function createWindow() {
   });
 
   win.loadURL(`http://127.0.0.1:${port}/`);
+  installZoom(win);
 
   // Anything that is not the app itself opens in the real browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -180,7 +258,10 @@ Menu.setApplicationMenu(
         { role: 'reload' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
-        { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'resetZoom' },
+        { role: 'zoomIn', accelerator: 'CommandOrControl+Plus' },
+        { role: 'zoomIn', accelerator: 'CommandOrControl+=', visible: false },
+        { role: 'zoomOut', accelerator: 'CommandOrControl+-' },
+        { role: 'resetZoom', accelerator: 'CommandOrControl+0' },
         { type: 'separator' },
         { role: 'quit' },
       ],
