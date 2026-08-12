@@ -7,6 +7,7 @@ the same network.
 import json
 import mimetypes
 import os
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,7 +15,22 @@ from urllib.parse import parse_qs, urlparse
 
 from . import db, runtime, scheduler, sources, stats, tutor
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+def _static_dir():
+    """Where the frontend lives, in a checkout and inside a frozen build.
+
+    PyInstaller unpacks bundled data into a temporary tree and points
+    sys._MEIPASS at it, so the path next to this source file does not exist in
+    a release build. Getting this wrong is invisible in testing until you
+    request a page rather than an API route: every /api/* endpoint keeps
+    working and the UI serves a bare 404.
+    """
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled:
+        return os.path.join(bundled, "ferrule", "static")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+
+STATIC_DIR = _static_dir()
 
 # SQLite connections are not shared across threads; give each its own.
 _local = threading.local()

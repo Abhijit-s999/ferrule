@@ -23,6 +23,11 @@ if [ -f "$VENV/bin/activate" ]; then . "$VENV/bin/activate"; else . "$VENV/Scrip
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet pyinstaller
 
+# --add-data uses ":" everywhere except Windows, which wants ";".
+# The source path must be absolute: --specpath makes PyInstaller resolve
+# relative sources against the spec directory, not the project root.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) SEP=";";; *) SEP=":";; esac
+
 rm -rf build dist/backend
 pyinstaller \
   --name ferrule-backend \
@@ -32,10 +37,16 @@ pyinstaller \
   --specpath build \
   --console \
   --hidden-import ferrule.mathtex \
-  --collect-data ferrule \
+  --add-data "$PWD/ferrule/static${SEP}ferrule/static" \
   ferrule.py
 
 deactivate
+# The UI is the thing most easily left out of a bundle, and its absence only
+# shows up as a 404 on "/" while every API route still answers. Fail the build
+# here rather than shipping it.
+BIN="dist/backend/ferrule-backend"; [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+"$BIN" selftest || { echo "backend selftest FAILED" >&2; exit 1; }
+
 echo
 echo "built: dist/backend/ferrule-backend*"
 ls -la dist/backend/
