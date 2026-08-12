@@ -20,9 +20,27 @@ there is no runtime to install and no terminal to open.
 | Platform | File | How |
 | --- | --- | --- |
 | Windows | `ferrule-Setup-*.exe` | Double-click, choose a folder, done |
-| macOS | `ferrule-*.dmg` | Open, drag to Applications |
+| macOS | `ferrule-*.dmg` | Open, drag to Applications, then see below |
 | Linux | `ferrule-*.AppImage` | `chmod +x` then run |
 | Linux (Debian/Ubuntu) | `ferrule_*.deb` | `sudo apt install ./ferrule_*.deb` |
+
+### macOS: the first launch needs one extra step
+
+ferrule is signed ad-hoc but **not notarised** — notarisation requires a paid
+Apple Developer account. macOS therefore quarantines it on download, and refuses
+to open it with a message that says the app *"is damaged and can't be opened"*.
+Nothing is damaged; that is simply what Gatekeeper says about software it cannot
+verify.
+
+Either **right-click the app → Open → Open**, which is the supported path, or
+clear the quarantine flag once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/ferrule.app
+```
+
+After that it opens normally. If you would rather not do either, run it from
+source — the instructions are below and involve no Gatekeeper at all.
 
 On first launch the app offers to download the question bank for you. That is
 the whole setup.

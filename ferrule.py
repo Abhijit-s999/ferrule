@@ -8,6 +8,7 @@
 """
 
 import argparse
+import os
 import sys
 
 from ferrule import db, fetch, server, sources, stats
@@ -105,6 +106,40 @@ def cmd_stats(args):
     return 0
 
 
+def cmd_selftest(args):
+    """Check that a build is actually complete. Run by the release build.
+
+    Exists because the failure it catches is silent: if the frontend is left
+    out of a frozen bundle, every API route still answers and only the pages
+    404, so a smoke test that hits /api/state passes while the app is unusable.
+    """
+    from ferrule import server
+
+    problems = []
+    required = ["index.html", "app.js", "charts.js", "style.css"]
+    print(f"static dir: {server.STATIC_DIR}")
+    for name in required:
+        path = os.path.join(server.STATIC_DIR, name)
+        ok = os.path.isfile(path) and os.path.getsize(path) > 0
+        print(f"  {'ok  ' if ok else 'MISSING'} {name}")
+        if not ok:
+            problems.append(name)
+
+    try:
+        conn = db.connect(args.db)
+        conn.execute("SELECT 1").fetchone()
+        print("  ok   database opens")
+    except Exception as e:
+        problems.append(f"database: {e}")
+        print(f"  FAIL database: {e}")
+
+    if problems:
+        print(f"\nselftest FAILED: {', '.join(problems)}", file=sys.stderr)
+        return 1
+    print("\nselftest passed")
+    return 0
+
+
 def cmd_reset(args):
     """Clear the practice record, keeping the downloaded question bank."""
     conn = db.connect(args.db)
@@ -165,6 +200,9 @@ def main():
     pl = sub.add_parser("plan", help="what to study next")
     pl.add_argument("--minutes", type=int, default=30)
     pl.set_defaults(func=cmd_plan)
+
+    ST = sub.add_parser("selftest", help="verify this build is complete (used by CI)")
+    ST.set_defaults(func=cmd_selftest)
 
     rs = sub.add_parser("reset", help="clear your practice record (keeps questions)")
     rs.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
