@@ -315,12 +315,14 @@ VIEWS.practice = function renderPractice() {
       <div class="spacer"></div>
       <span class="muted hide-sm" style="font-size:12px">
         ${isSpr ? '<span class="kbd">Enter</span> check'
-                : '<span class="kbd">A</span>–<span class="kbd">D</span> answer · <span class="kbd">Alt</span>+letter to cross out'}
-        · <span class="kbd">Enter</span> next
+                : '<span class="kbd">A</span>–<span class="kbd">D</span> answer · <span class="kbd">Alt</span>+letter cross out'}
+        · <span class="kbd">Enter</span> next · select text to highlight
       </span>
     </div>`;
 
   tickClock();
+  restoreAnnotations();
+  wireCrossOut();
   wireChat(() => state.queue[state.idx], () => !!state.answered);
   if (isSpr) $('#submit').onclick = () => submit($('#spr').value);
   else $$('.choice').forEach((b) => (b.onclick = (e) => {
@@ -330,11 +332,39 @@ VIEWS.practice = function renderPractice() {
   $('#skip').onclick = next;
 };
 
-/* Crossing out a choice is how people actually work a multiple-choice test. */
+/* Crossing out a choice is how people actually work a multiple-choice test:
+ * you rule out what is obviously wrong, then decide between what is left. */
 function toggleEliminate(btn) {
-  const l = btn.dataset.letter;
-  state.eliminated.has(l) ? state.eliminated.delete(l) : state.eliminated.add(l);
-  btn.classList.toggle('eliminated', state.eliminated.has(l));
+  const letter = btn.dataset.letter;
+  const off = btn.classList.toggle('eliminated');
+  const key = annotKey();
+  if (key) {
+    const set = new Set(annot.eliminated[key] || []);
+    off ? set.add(letter) : set.delete(letter);
+    annot.eliminated[key] = [...set];
+  }
+  btn.setAttribute('aria-pressed', off ? 'true' : 'false');
+}
+
+/* The strike button sits inside the choice, so clicking it must not also
+ * answer the question. */
+function wireCrossOut() {
+  $$('.choice').forEach((btn) => {
+    if (btn.querySelector('.strike') || btn.disabled) return;
+    const b = document.createElement('span');
+    b.className = 'strike';
+    b.title = `Cross out ${btn.dataset.letter} (Alt+${btn.dataset.letter})`;
+    b.setAttribute('role', 'button');
+    b.tabIndex = -1;
+    b.textContent = '\u2013';
+    b.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleEliminate(btn);
+    });
+    btn.appendChild(b);
+  });
 }
 
 async function submit(response) {
@@ -595,6 +625,143 @@ function qCard(q, i) {
         </div>
       </div></div></div>
     </div>`;
+}
+
+// ---------------------------------------------------------------- annotation
+
+/* Highlighting and answer cross-out, the two tools people actually use on a
+ * paper test and that Bluebook provides on screen.
+ *
+ * Both are per-question and live only for the session. Highlights are kept as
+ * the passage's rendered HTML rather than as text offsets: the passages contain
+ * MathML, tables and inline SVG, so offsets into "the text" are ambiguous,
+ * while re-inserting the exact markup is not.
+ */
+const annot = { highlights: {}, eliminated: {} };
+
+function annotKey() {
+  const q = flow.on ? flow.current : state.queue[state.idx];
+  return q ? q.external_id : null;
+}
+
+/* Wrap a selection in <mark>.
+ *
+ * range.surroundContents throws whenever the selection crosses an element
+ * boundary — which is most real selections, since passages are full of <em>
+ * and <span>. So each intersecting text node is wrapped individually instead. */
+function highlightSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+  const range = sel.getRangeAt(0);
+
+  const root = range.commonAncestorContainer.nodeType === 1
+    ? range.commonAncestorContainer
+    : range.commonAncestorContainer.parentElement;
+  const scope = root && root.closest('.stimulus, .stem');
+  if (!scope) return false;                      // only the passage and the question
+
+  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) {
+    const n = walker.currentNode;
+    if (!n.nodeValue.trim()) continue;
+    if (range.intersectsNode(n)) nodes.push(n);
+  }
+  if (!nodes.length) return false;
+
+  for (const node of nodes) {
+    let text = node;
+    // Trim the first and last nodes down to the selected part only.
+    if (node === range.endContainer && range.endOffset < text.nodeValue.length) {
+      text.splitText(range.endOffset);
+    }
+    if (node === range.startContainer && range.startOffset > 0) {
+      text = text.splitText(range.startOffset);
+    }
+    if (text.parentElement.closest('mark.hl')) continue;   // already highlighted
+    const mark = document.createElement('mark');
+    mark.className = 'hl';
+    text.parentNode.insertBefore(mark, text);
+    mark.appendChild(text);
+  }
+
+  sel.removeAllRanges();
+  saveAnnotations();
+  return true;
+}
+
+function clearHighlights() {
+  $$('.stimulus mark.hl, .stem mark.hl').forEach((m) => {
+    const parent = m.parentNode;
+    while (m.firstChild) parent.insertBefore(m.firstChild, m);
+    parent.removeChild(m);
+    parent.normalize();
+  });
+  saveAnnotations();
+}
+
+function saveAnnotations() {
+  const key = annotKey();
+  if (!key) return;
+  const store = {};
+  for (const sel of ['.stimulus', '.stem']) {
+    const el = $(sel);
+    if (el && el.querySelector('mark.hl')) store[sel] = el.innerHTML;
+  }
+  if (Object.keys(store).length) annot.highlights[key] = store;
+  else delete annot.highlights[key];
+}
+
+function restoreAnnotations() {
+  const key = annotKey();
+  if (!key) return;
+  const store = annot.highlights[key];
+  if (store) {
+    for (const [sel, html] of Object.entries(store)) {
+      const el = $(sel);
+      if (el) el.innerHTML = html;
+    }
+  }
+  for (const letter of annot.eliminated[key] || []) {
+    const btn = main.querySelector(`.choice[data-letter="${letter}"]`);
+    if (btn) btn.classList.add('eliminated');
+  }
+}
+
+/* A small toolbar that appears next to a selection, the way Bluebook does it. */
+function wireHighlighting() {
+  const bar = document.createElement('div');
+  bar.className = 'hlbar';
+  bar.innerHTML = `<button data-hl="mark">Highlight</button>
+                   <button data-hl="clear">Clear all</button>`;
+  document.body.appendChild(bar);
+
+  const hide = () => bar.classList.remove('on');
+
+  const onUp = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return hide();
+    const r = sel.getRangeAt(0);
+    const node = r.commonAncestorContainer;
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    if (!el || !el.closest('.stimulus, .stem')) return hide();
+
+    const box = r.getBoundingClientRect();
+    bar.style.top = `${window.scrollY + box.top - 44}px`;
+    bar.style.left = `${window.scrollX + box.left + box.width / 2}px`;
+    bar.classList.add('on');
+  };
+
+  document.addEventListener('mouseup', () => setTimeout(onUp, 10));
+  document.addEventListener('scroll', hide, true);
+  bar.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection
+  bar.addEventListener('click', (e) => {
+    const act = e.target.dataset.hl;
+    if (!act) return;
+    if (act === 'mark') highlightSelection();
+    if (act === 'clear') clearHighlights();
+    hide();
+  });
 }
 
 // ---------------------------------------------------------------- tutor gate
@@ -872,9 +1039,14 @@ function flowRender() {
       </div>
     </div>`;
 
+  restoreAnnotations();
+  wireCrossOut();
   wireChat(() => flow.current, () => !!flow.answered);
   if (isSpr) $('#spr').focus();
-  else $$('.choice').forEach((b) => (b.onclick = () => flowAnswer(b.dataset.letter)));
+  else $$('.choice').forEach((b) => (b.onclick = (e) => {
+    if (e.altKey) return toggleEliminate(b);
+    flowAnswer(b.dataset.letter);
+  }));
 }
 
 async function flowAnswer(response) {
@@ -1203,34 +1375,72 @@ function pollRuntime() {
 
 // ---------------------------------------------------------------- keyboard
 
+/* Is the user typing into something?
+ *
+ * Every shortcut below has to defer to this. Space advancing to the next
+ * question is fine on a question and infuriating halfway through a sentence to
+ * the tutor, which is exactly what it used to do: the space binding was checked
+ * before the typing guard, so a normal word break skipped the question. */
+function isTyping() {
+  const el = document.activeElement;
+  if (!el) return false;
+  return (
+    el.isContentEditable ||
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+  );
+}
+
 /* Flow keys are handled first and never fall through to the practice bindings. */
 document.addEventListener('keydown', (e) => {
   if (!flow.on) return;
-  const typing = document.activeElement?.tagName === 'INPUT';
+  const typing = isTyping();
 
-  if (e.key === 'Escape') { e.preventDefault(); return flowExit(); }
-  if (e.key === 'Enter' && typing) { e.preventDefault(); return flowAnswer($('#spr').value); }
-  if ((e.key === ' ' || e.key === 'Enter') && flow.answered) { e.preventDefault(); return flowNext(); }
-  if (typing || flow.answered) return;
+  // Escape leaves the input first, and only exits flow when nothing is focused.
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (typing) return document.activeElement.blur();
+    return flowExit();
+  }
+  // The grid-in box is the only input that submits an answer on Enter.
+  if (e.key === 'Enter' && typing && document.activeElement.id === 'spr') {
+    e.preventDefault();
+    return flowAnswer($('#spr').value);
+  }
+  if (typing) return;                       // hands off while typing anywhere
+  if ((e.key === ' ' || e.key === 'Enter') && flow.answered) {
+    e.preventDefault();
+    return flowNext();
+  }
+  if (flow.answered) return;
 
   const k = e.key.toUpperCase();
   const letter = 'ABCD'.includes(k) ? k : '1234'.includes(k) ? 'ABCD'['1234'.indexOf(k)] : null;
   if (letter && main.querySelector(`.choice[data-letter="${letter}"]`)) {
     e.preventDefault();
+    const btn = main.querySelector(`.choice[data-letter="${letter}"]`);
+    if (e.altKey) return toggleEliminate(btn);
     flowAnswer(letter);
   }
 }, true);
 
 document.addEventListener('keydown', (e) => {
   if (state.view !== 'practice') return;
-  const typing = document.activeElement && document.activeElement.tagName === 'INPUT';
+  const typing = isTyping();
 
   if (e.key === 'Enter') {
+    if (typing) {
+      if (document.activeElement.id === 'spr') {
+        e.preventDefault();
+        return submit(document.activeElement.value);
+      }
+      return;                                // let the chat form handle its own
+    }
     if (state.answered) { e.preventDefault(); return next(); }
-    if (typing) { e.preventDefault(); return submit(document.activeElement.value); }
     return;
   }
-  if (typing || state.answered) return;
+  if (typing) return;
+  if (e.key === ' ' && state.answered) { e.preventDefault(); return next(); }
+  if (state.answered) return;
 
   const k = e.key.toUpperCase();
   const letter = 'ABCD'.includes(k) ? k : '1234'.includes(k) ? 'ABCD'['1234'.indexOf(k)] : null;
@@ -1242,5 +1452,6 @@ document.addEventListener('keydown', (e) => {
   else submit(letter);
 });
 
+wireHighlighting();
 show('home');
 refreshChip();
