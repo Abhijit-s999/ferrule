@@ -23,10 +23,21 @@ if [ -f "$VENV/bin/activate" ]; then . "$VENV/bin/activate"; else . "$VENV/Scrip
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet pyinstaller
 
-# --add-data uses ":" everywhere except Windows, which wants ";".
-# The source path must be absolute: --specpath makes PyInstaller resolve
-# relative sources against the spec directory, not the project root.
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) SEP=";";; *) SEP=":";; esac
+# --add-data needs a platform-native separator and an absolute SOURCE path.
+# Absolute because --specpath makes PyInstaller resolve relative sources
+# against the spec directory rather than the project root; native because Git
+# Bash reports $PWD as /d/a/... which PyInstaller reads as the nonexistent
+# Windows path \d\a\... . `pwd -W` gives D:/a/... instead.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    SEP=";"
+    SRC="$(pwd -W 2>/dev/null || cygpath -m "$PWD")"
+    ;;
+  *)
+    SEP=":"
+    SRC="$PWD"
+    ;;
+esac
 
 rm -rf build dist/backend
 pyinstaller \
@@ -37,7 +48,7 @@ pyinstaller \
   --specpath build \
   --console \
   --hidden-import ferrule.mathtex \
-  --add-data "$PWD/ferrule/static${SEP}ferrule/static" \
+  --add-data "${SRC}/ferrule/static${SEP}ferrule/static" \
   ferrule.py
 
 deactivate
