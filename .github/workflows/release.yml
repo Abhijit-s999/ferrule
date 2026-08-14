@@ -51,7 +51,17 @@ jobs:
         run: ./scripts/build-backend.sh
 
       - name: Install JS dependencies
-        run: npm ci
+        shell: bash
+        # The npm registry drops connections often enough that a single
+        # transient failure would otherwise block the whole release: publishing
+        # needs all three platforms, so one flaky socket loses everything.
+        run: |
+          for i in 1 2 3; do
+            npm ci && exit 0
+            echo "npm ci failed (attempt $i of 3); retrying"
+            sleep 15
+          done
+          exit 1
 
       - name: Build the installer
         shell: bash

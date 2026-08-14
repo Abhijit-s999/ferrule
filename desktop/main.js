@@ -12,6 +12,7 @@ const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 const net = require('net');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
@@ -100,7 +101,29 @@ function waitForServer(p, timeoutMs = 40000) {
  * change, with nothing to indicate why. A checkout runs live source; only a
  * packaged app runs the bundle. */
 function isSourceCheckout() {
-  return fs.existsSync(path.join(ROOT, 'ferrule.py'));
+  // app.isPackaged is the only reliable signal. ROOT inside a packaged build
+  // points at app.asar, and Electron's asar shim makes paths *inside* the
+  // archive answer existsSync() truthfully — so a bare file check would call a
+  // shipped app a checkout and try to run Python against a path inside the
+  // archive.
+  return !app.isPackaged && fs.existsSync(path.join(ROOT, 'ferrule.py'));
+}
+
+/* A working directory that is a real directory on disk.
+ *
+ * ROOT is …/Contents/Resources/app.asar in a packaged build, and that is an
+ * archive FILE. Passing it as spawn's cwd makes the child's chdir fail with
+ * ENOTDIR before the backend ever runs — which is what a released macOS build
+ * did: the backend binary was found and correct, and the spawn still failed.
+ * Nothing in the backend depends on cwd; its data paths are absolute. */
+function spawnCwd() {
+  if (!app.isPackaged) return ROOT;
+  for (const dir of [process.resourcesPath, app.getPath('userData'), os.tmpdir()]) {
+    try {
+      if (dir && fs.statSync(dir).isDirectory()) return dir;
+    } catch { /* try the next one */ }
+  }
+  return undefined;                    // let the child inherit ours
 }
 
 function findBundledBackend() {
@@ -121,6 +144,14 @@ async function startBackend() {
   if (bundled) {
     cmd = bundled;
     args = ['serve', '--port', String(port)];
+  } else if (app.isPackaged) {
+    dialog.showErrorBox(
+      'ferrule is incomplete',
+      'The bundled backend is missing from this build, so there is nothing to '
+      + 'run. Please re-download the installer from the releases page.'
+    );
+    app.quit();
+    return;
   } else {
     const python = findPython();
     if (!python) {
@@ -140,7 +171,7 @@ async function startBackend() {
     args = python === 'py' ? ['-3', ...script] : script;
   }
 
-  backend = spawn(cmd, args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+  backend = spawn(cmd, args, { cwd: spawnCwd(), stdio: ['ignore', 'pipe', 'pipe'] });
 
   let log = '';
   backend.stdout.on('data', (d) => { log += d; });
