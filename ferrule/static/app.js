@@ -495,6 +495,55 @@ async function askTutor(q, response, wasCorrect) {
 
 // ---------------------------------------------------------------- question bank
 
+/* Subtopic options for the bank filter.
+ *
+ * Narrowed by whatever section and domain are already chosen, so the list stays
+ * short and never offers a combination that returns nothing. With no domain
+ * chosen the skills are grouped under their domain headings, because "Text
+ * Structure and Purpose" means little on its own in a flat list of 29. */
+/* Rendered text of an HTML fragment: tags removed and entities resolved, which
+ * a regex cannot do on its own. */
+function htmlToText(html) {
+  const d = document.createElement('div');
+  d.innerHTML = html || '';
+  return (d.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+function skillOptions(skills, f) {
+  const rows = skills.filter(
+    (s) =>
+      (!f.test || String(s.test) === String(f.test)) &&
+      (!f.domain || s.domain === f.domain)
+  );
+  if (!rows.length) return '';
+
+  const opt = (s) =>
+    `<option value="${esc(s.skill)}" ${f.skill === s.skill ? 'selected' : ''}>` +
+    `${esc(s.skill)} (${s.n})</option>`;
+
+  if (f.domain) return rows.map(opt).join('');
+
+  const byDomain = {};
+  rows.forEach((s) => (byDomain[s.domain] ||= []).push(s));
+  return Object.entries(byDomain)
+    .map(([d, rs]) => `<optgroup label="${esc(d)}">${rs.map(opt).join('')}</optgroup>`)
+    .join('');
+}
+
+/* A subtopic only exists inside one domain/section, so changing either can
+ * strand the chosen subtopic and silently return zero results. Drop it when it
+ * no longer belongs. */
+function pruneSkill(skills, f) {
+  if (!f.skill) return;
+  const ok = skills.some(
+    (s) =>
+      s.skill === f.skill &&
+      (!f.test || String(s.test) === String(f.test)) &&
+      (!f.domain || s.domain === f.domain)
+  );
+  if (!ok) f.skill = '';
+}
+
 VIEWS.bank = async function renderBank() {
   const f = state.bank.filters;
   const params = new URLSearchParams({ page: state.bank.page, per: 20 });
@@ -521,6 +570,10 @@ VIEWS.bank = async function renderBank() {
       <select id="bdom">
         <option value="">All domains</option>
         ${domains.map((d) => `<option value="${esc(d)}" ${f.domain === d ? 'selected' : ''}>${esc(d)}</option>`).join('')}
+      </select>
+      <select id="bskill" title="Narrow to one subtopic, e.g. Cross-Text Connections">
+        <option value="">All subtopics</option>
+        ${skillOptions(skills, f)}
       </select>
       <select id="bdiff">
         <option value="">Any difficulty</option>
@@ -565,8 +618,18 @@ VIEWS.bank = async function renderBank() {
     </div>`;
 
   const setF = (k, v) => { f[k] = v || ''; state.bank.page = 1; VIEWS.bank(); };
-  $('#bsec').onchange = (e) => setF('test', e.target.value);
-  $('#bdom').onchange = (e) => setF('domain', e.target.value);
+  // Section and domain both constrain the subtopic list, so prune before rerender.
+  $('#bsec').onchange = (e) => {
+    f.test = e.target.value || '';
+    pruneSkill(skills, f);
+    state.bank.page = 1; VIEWS.bank();
+  };
+  $('#bdom').onchange = (e) => {
+    f.domain = e.target.value || '';
+    pruneSkill(skills, f);
+    state.bank.page = 1; VIEWS.bank();
+  };
+  $('#bskill').onchange = (e) => setF('skill', e.target.value);
   $('#bdiff').onchange = (e) => setF('difficulty', e.target.value);
   $('#bsrc').onchange = (e) => setF('source', e.target.value);
   $('#bseen').onchange = (e) => {
@@ -595,7 +658,9 @@ VIEWS.bank = async function renderBank() {
 };
 
 function qCard(q, i) {
-  const plain = (q.stem || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  // Strip tags AND decode entities: a regex alone leaves &rsquo; and &nbsp;
+  // showing literally in the one-line preview.
+  const plain = htmlToText(q.stem || '');
   const id = q.external_id.replace(/[^a-z0-9]/gi, '');
   const status = q.attempts
     ? `<span class="pill ${q.correct === q.attempts ? 'ok' : ''}">${q.correct}/${q.attempts}</span>`
