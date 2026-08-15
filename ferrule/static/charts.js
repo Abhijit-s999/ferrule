@@ -36,8 +36,20 @@ CH.accuracyColor = (acc, target) => {
   return cssVar('--div-pos-2');
 };
 
-/* Confidence: a cell built on one attempt must not look like a verdict. */
-CH.confidence = (n) => (n === 0 ? 1 : n < 3 ? 0.5 : n < 6 ? 0.78 : 1);
+/* Confidence.
+ *
+ * Below CONFIDENT a cell's percentage is shown but is not evidence, so the
+ * colour is faded towards the background in proportion to how little is behind
+ * it. A cell reading 100% off two attempts should not look like mastery. */
+/* Per difficulty, matching the weakness mode: a cell is judged against the
+   evidence that difficulty actually needs, not one flat number. */
+CH.CONFIDENT = { E: 8, M: 15, H: 20 };
+CH.confidentFor = (d) => CH.CONFIDENT[d] || 20;
+CH.confidence = (n, d) => {
+  const need = CH.confidentFor(d);
+  if (n === 0 || n >= need) return 1;
+  return 0.34 + 0.5 * (n / need);
+};
 
 const svg = (w, h, cls) =>
   `<svg viewBox="0 0 ${w} ${h}" class="${cls || ''}" role="img" preserveAspectRatio="xMidYMid meet">`;
@@ -69,14 +81,18 @@ CH.heatmap = (rows, target) => {
         const n = c ? c.attempts : 0;
         const acc = c ? c.accuracy : null;
         const bg = CH.accuracyColor(acc, target);
-        const op = CH.confidence(n);
+        const op = CH.confidence(n, d);
         const avail = c ? c.available : 0;
+        const thin = n > 0 && n < CH.confidentFor(d);
         const tip = n
-          ? `${s.skill} · ${DIFF_NAME[d]}: ${c.correct}/${n} correct (${Math.round(acc * 100)}%), ${Math.round(c.avg_ms / 1000)}s avg`
+          ? `${s.skill} · ${DIFF_NAME[d]}: ${c.correct}/${n} correct (${Math.round(acc * 100)}%)`
+            + `, ${Math.round(c.avg_ms / 1000)}s avg`
+            + (thin ? ` — only ${n} of ${CH.confidentFor(d)} needed at this difficulty` : '')
           : `${s.skill} · ${DIFF_NAME[d]}: not attempted yet · ${avail} available`;
         // NB: the modifier is `blank`, not `empty` -- `.empty` is a global
         // empty-state utility with heavy padding that would inflate the cell.
-        html += `<span class="heat-cell${n ? '' : ' blank'}" style="background:${bg};opacity:${op}"
+        html += `<span class="heat-cell${n ? '' : ' blank'}${thin ? ' thin' : ''}"
+                   style="background:${bg};opacity:${op}"
                    tabindex="0" title="${esc(tip)}">
                    ${n ? `<b>${Math.round(acc * 100)}</b><i>${n}</i>` : '<b>·</b>'}
                  </span>`;
@@ -93,7 +109,9 @@ CH.heatmap = (rows, target) => {
       <span class="lg"><i style="background:${cssVar('--div-mid')}"></i>on target (${Math.round(target * 100)}%)</span>
       <span class="lg"><i style="background:${cssVar('--div-pos-1')}"></i>above</span>
       <span class="lg"><i style="background:${cssVar('--div-pos-2')}"></i>well above</span>
-      <span class="lg muted">big number = % correct, small = attempts · faded cells have too little data to trust</span>
+      <span class="lg muted">big number = % correct, small = attempts</span>
+      <span class="lg muted">faded and outlined = not enough answered yet to draw a conclusion
+        (${CH.CONFIDENT.E}/${CH.CONFIDENT.M}/${CH.CONFIDENT.H} for easy/medium/hard)</span>
     </div>`;
   return html;
 };

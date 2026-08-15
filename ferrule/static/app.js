@@ -59,18 +59,79 @@ const state = {
   bank: { page: 1, filters: {}, open: null },
 };
 
+// ---------------------------------------------------------------- feedback
+
+/* Transient confirmation for actions that otherwise change nothing visible.
+ * Auto-dismisses: a message that needs dismissing is a dialog, not a toast. */
+let toastTimer = null;
+function toast(message, kind = '') {
+  let el = $('#toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast';
+    el.className = 'toast';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.className = `toast on ${kind}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('on'), 2600);
+}
+
+/* Placeholder shaped like the content that is coming, rather than a spinner
+ * that says nothing about it. */
+const skeleton = (rows = 5, opts = {}) => `
+  <div class="skel-wrap" aria-busy="true" aria-label="Loading">
+    ${opts.title !== false ? '<div class="skel skel-title"></div>' : ''}
+    ${Array.from({ length: rows }, (_, i) =>
+      `<div class="skel skel-row" style="width:${92 - (i % 3) * 11}%"></div>`).join('')}
+  </div>`;
+
+/* Any button that fires an async action: disabled while it runs, so a second
+ * click cannot double-submit, with the reason visible. */
+async function busy(btn, label, fn) {
+  if (!btn || btn.disabled) return;
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.classList.add('is-busy');
+  btn.innerHTML = `<span class="spin"></span>${label || ''}`;
+  try {
+    return await fn();
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('is-busy');
+    btn.innerHTML = original;
+  }
+}
+
 // ---------------------------------------------------------------- routing
 
 $$('nav button').forEach((b) => (b.onclick = () => show(b.dataset.view)));
 
 const VIEWS = {};
 function show(view) {
-  state.view = view;
-  $$('nav button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
-  main.className = ['analytics', 'bank'].includes(view) ? 'wide' : '';
-  if (view !== 'practice') stopClock();
-  VIEWS[view]();
+  const render = () => {
+    state.view = view;
+    $$('nav button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
+    main.className = ['analytics', 'bank'].includes(view) ? 'wide' : '';
+    if (view !== 'practice') stopClock();
+    VIEWS[view]();
+  };
+
+  // A cross-fade between screens, where the browser can do it without cost.
+  // Skipped during a question run: a transition between two questions would
+  // put a visible pause exactly where concentration matters most.
+  if (document.startViewTransition && !flow.on && !prefersReducedMotion()) {
+    document.startViewTransition(render);
+  } else {
+    render();
+  }
 }
+
+const prefersReducedMotion = () =>
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // ---------------------------------------------------------------- tutor chip
 
@@ -95,7 +156,11 @@ async function refreshChip() {
     </span>`;
 
   const ej = $('#eject');
-  if (ej) ej.onclick = async () => { await post('/api/runtime/eject', {}); refreshChip(); };
+  if (ej) ej.onclick = async () => {
+    await post('/api/runtime/eject', {});
+    toast('Model unloaded — GPU freed');
+    refreshChip();
+  };
 }
 setInterval(() => { if (!document.hidden) refreshChip(); }, 5000);
 
@@ -147,7 +212,7 @@ function stopClock() {
 // ---------------------------------------------------------------- home
 
 VIEWS.home = async function renderHome() {
-  main.innerHTML = '<div class="empty">Loading…</div>';
+  main.innerHTML = skeleton(4);
   const [ov, plan, vt] = await Promise.all([
     api('/api/state'), api('/api/plan?minutes=30'), api('/api/vintages'),
   ]);
@@ -346,24 +411,29 @@ function toggleEliminate(btn) {
   btn.setAttribute('aria-pressed', off ? 'true' : 'false');
 }
 
-/* The strike button sits inside the choice, so clicking it must not also
- * answer the question. */
+/* Cross-out lives OUTSIDE the answer button.
+ *
+ * It used to be a span inside .choice, and stopPropagation is not enough there:
+ * the strike is a small target sitting on top of a very large one, so every
+ * near-miss registered as an answer. Wrapping the pair in a row and making the
+ * strike a real sibling button means a miss lands on neither. */
 function wireCrossOut() {
   $$('.choice').forEach((btn) => {
-    if (btn.querySelector('.strike') || btn.disabled) return;
-    const b = document.createElement('span');
+    if (btn.disabled || btn.parentElement.classList.contains('choice-row')) return;
+
+    const row = document.createElement('div');
+    row.className = 'choice-row';
+    btn.parentNode.insertBefore(row, btn);
+    row.appendChild(btn);
+
+    const b = document.createElement('button');
+    b.type = 'button';
     b.className = 'strike';
-    b.title = `Cross out ${btn.dataset.letter} (Alt+${btn.dataset.letter})`;
-    b.setAttribute('role', 'button');
-    b.tabIndex = -1;
-    b.textContent = '\u2013';
-    b.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
-    b.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      toggleEliminate(btn);
-    });
-    btn.appendChild(b);
+    b.title = `Cross out ${btn.dataset.letter}  (Alt+${btn.dataset.letter})`;
+    b.setAttribute('aria-label', `Cross out choice ${btn.dataset.letter}`);
+    b.innerHTML = `<span class="strike-letter">${btn.dataset.letter}</span>`;
+    b.addEventListener('click', () => toggleEliminate(btn));
+    row.appendChild(b);
   });
 }
 
@@ -395,11 +465,15 @@ async function submit(response) {
     <div class="row" style="margin-top:15px">
       <button class="primary" id="next">${state.idx + 1 >= state.queue.length ? 'Finish' : 'Next question'}</button>
       <button class="ghost" id="ask">${I.spark} Ask the tutor</button>
+      ${!res.correct ? `<button class="quiet" id="misclick" title="Delete this attempt and answer again">
+        Misclick — answer again</button>` : ''}
       ${!res.correct ? '<span class="muted" style="font-size:12.5px">Queued for review</span>' : ''}
     </div>
     <div id="tutor-out"></div>`;
   $('#next').onclick = next;
   $('#ask').onclick = () => askTutor(q, response, res.correct);
+  const mc = $('#misclick');
+  if (mc) mc.onclick = () => misclick(VIEWS.practice);
   const hint = $('#chathint'); if (hint) hint.textContent = '';
   $('#next').focus();
 }
@@ -549,7 +623,7 @@ VIEWS.bank = async function renderBank() {
   const params = new URLSearchParams({ page: state.bank.page, per: 20 });
   for (const [k, v] of Object.entries(f)) if (v) params.set(k, v);
 
-  if (!$('.qlist')) main.innerHTML = '<div class="empty">Loading…</div>';
+  if (!$('.qlist')) main.innerHTML = skeleton(8);
   const [data, vt] = await Promise.all([api('/api/bank?' + params), api('/api/vintages')]);
 
   const skills = data.facets.skills;
@@ -589,6 +663,11 @@ VIEWS.bank = async function renderBank() {
         <option value="">Seen or not</option>
         <option value="unseen" ${f.unseen ? 'selected' : ''}>Not attempted</option>
         <option value="missed" ${f.missed ? 'selected' : ''}>Previously missed</option>
+      </select>
+      <select id="breserved" title="Questions that also appear in official full-length practice tests">
+        <option value="" ${!f.reserved ? 'selected' : ''}>Reserved: show all</option>
+        <option value="hide" ${f.reserved === 'hide' ? 'selected' : ''}>Hide practice-test questions</option>
+        <option value="only" ${f.reserved === 'only' ? 'selected' : ''}>Only practice-test questions</option>
       </select>
       <select id="bsince" title="When College Board added the question. Community questions carry no date and are excluded when this is set.">
         <option value="">Any date added</option>
@@ -638,6 +717,7 @@ VIEWS.bank = async function renderBank() {
     state.bank.page = 1; VIEWS.bank();
   };
   $('#bsince').onchange = (e) => setF('since', e.target.value);
+  $('#breserved').onchange = (e) => setF('reserved', e.target.value);
   $('#flowgo').onclick = () => withTutorChoice(flowStart);
 
   let deb;
@@ -665,6 +745,9 @@ function qCard(q, i) {
   const status = q.attempts
     ? `<span class="pill ${q.correct === q.attempts ? 'ok' : ''}">${q.correct}/${q.attempts}</span>`
     : '';
+  const reserved = q.in_practice_test
+    ? `<span class="pill warnpill" title="Also appears in an official full-length practice test">in a practice test</span>`
+    : '';
   return `
     <div class="qcard">
       <button class="qcard-head">
@@ -672,7 +755,7 @@ function qCard(q, i) {
         <span class="tag ${q.difficulty}">${q.difficulty}</span>
         <span class="txt">${esc(plain).slice(0, 150) || '(figure-based question)'}</span>
         <span class="muted hide-sm" style="font-size:11.5px">${esc(q.skill)}</span>
-        ${status}
+        ${reserved}${status}
       </button>
       <div class="qcard-body"><div><div class="qcard-inner">
         ${q.stimulus ? `<div class="stimulus">${q.stimulus}</div>` : ''}
@@ -690,6 +773,39 @@ function qCard(q, i) {
         </div>
       </div></div></div>
     </div>`;
+}
+
+/* "That was a misclick" — delete the attempt and let the question be answered
+ * again.
+ *
+ * The attempt is removed rather than amended: a mis-tap is not evidence. Left
+ * in place it drags the skill's accuracy down, pushes it up the weakness
+ * ranking, and schedules a review for something already known — so the whole
+ * point of the analytics is undermined by a slip of the finger. */
+async function misclick(rerender) {
+  const q = flow.on ? flow.current : state.queue[state.idx];
+  if (!q) return;
+  const wasWrong = flow.on ? flow.answered && !flow.answered.correct
+                           : state.answered && !state.answered.correct;
+  await post('/api/answer/undo', { external_id: q.external_id });
+  if (flow.mode === 'weakness') {
+    const c = wk.cells.get(cellKey(q));
+    if (c) {
+      c.attempts = Math.max(0, c.attempts - 1);
+      if (!wasWrong) c.correct = Math.max(0, c.correct - 1);
+    }
+  }
+  if (flow.on) {
+    flow.answered = null;
+    if (flow.done > 0) flow.done--;
+    // The streak was already broken by the wrong answer; leave it broken
+    // rather than inventing one back.
+  } else {
+    state.answered = null;
+  }
+  chat.history = [];
+  toast('Attempt deleted — answer it again');
+  rerender();
 }
 
 // ---------------------------------------------------------------- annotation
@@ -1023,12 +1139,17 @@ const flow = {
 };
 
 async function flowFill() {
-  const p = new URLSearchParams({ n: 25 });
-  for (const [k, v] of Object.entries(state.bank.filters)) if (v) p.set(k, v);
+  const weaknessRun = flow.mode === 'weakness';
+  const p = weaknessRun ? wkParams() : new URLSearchParams();
+  p.set('n', '25');
+  if (!weaknessRun) {
+    for (const [k, v] of Object.entries(state.bank.filters)) if (v) p.set(k, v);
+  }
   // Do not serve back what this run has already shown.
   if (flow.seen.length) p.set('exclude', flow.seen.slice(-120).join(','));
   try {
-    const { questions } = await api('/api/bank/queue?' + p);
+    const url = weaknessRun ? '/api/weakness/queue?' : '/api/bank/queue?';
+    const { questions } = await api(url + p);
     const have = new Set(flow.queue.map((q) => q.external_id));
     flow.queue.push(...questions.filter((q) => !have.has(q.external_id)));
   } catch { /* keep whatever is buffered */ }
@@ -1051,10 +1172,12 @@ async function flowStart() {
 }
 
 function flowExit() {
+  const mode = flow.mode;
   flow.on = false;
+  flow.mode = null;
   clearTimeout(flow.timer);
   document.body.classList.remove('focus-mode');
-  show('bank');
+  show(mode === 'weakness' ? 'weakness' : 'bank');
 }
 
 VIEWS.flow = function () { if (flow.current) flowRender(); };
@@ -1063,6 +1186,17 @@ function flowNext() {
   clearTimeout(flow.timer);
   flow.answered = null;
   chat.history = [];
+
+  // Drop anything buffered for a cell that has since reached its target. The
+  // batch was chosen before those answers existed.
+  if (flow.mode === 'weakness') {
+    while (flow.queue.length) {
+      const st = cellState(flow.queue[0]);
+      if (st && st.satisfied) { flow.queue.shift(); continue; }
+      break;
+    }
+  }
+
   flow.current = flow.queue.shift();
   if (!flow.current) { flowFill().then(() => flow.queue.length ? flowNext() : flowExit()); return; }
   flow.seen.push(flow.current.external_id);
@@ -1079,6 +1213,7 @@ function flowRender() {
       <div class="flowmeta">
         <span class="tag ${q.difficulty}">${{ E: 'Easy', M: 'Medium', H: 'Hard' }[q.difficulty] || q.difficulty}</span>
         <span>${esc(q.skill)}</span>
+        ${flow.mode === 'weakness' ? cellChip(q) : ''}
         <span class="spacer"></span>
         <span class="streak ${flow.streak >= 3 ? 'hot' : ''}" id="streak">${flow.streak}</span>
       </div>
@@ -1124,6 +1259,7 @@ async function flowAnswer(response) {
   });
   flow.answered = res;
   flow.done++;
+  if (flow.mode === 'weakness') noteAnswer(q, res.correct);
   if (res.correct) {
     flow.correct++; flow.streak++;
     flow.best = Math.max(flow.best, flow.streak);
@@ -1161,18 +1297,242 @@ async function flowAnswer(response) {
       <div class="row" style="margin-top:14px">
         <button class="primary" id="fnext">Continue</button>
         <button class="ghost" id="fask">${I.spark} Ask the tutor</button>
+        <button class="quiet" id="fmisclick" title="Delete this attempt and answer again">
+          Misclick — answer again</button>
       </div>
       <div id="tutor-out"></div>`;
     $('#fnext').onclick = flowNext;
     $('#fnext').focus();
     $('#fask').onclick = () => askTutor(q, response, false);
+    $('#fmisclick').onclick = () => misclick(flowRender);
   }
+}
+
+// ---------------------------------------------------------------- weakness
+
+/* Weakness target.
+ *
+ * Runs on the same flow machinery, but the queue comes from the weakest
+ * (skill, difficulty) cells rather than the bank, and each cell drops out once
+ * it reaches the accuracy you set. It does not end by itself.
+ */
+const wk = {
+  // Trust thresholds are per difficulty: proving you can do Easy questions
+  // takes far less evidence than proving it on Hard.
+  opts: {
+    target: 0.8, order: 'easiest-first', test: '', recent_first: true,
+    min_E: 8, min_M: 15, min_H: 20,
+  },
+  plan: null,
+  /* Live per-cell tallies, updated on every answer.
+   *
+   * Questions arrive 25 at a time, each carrying the cell's stats as they were
+   * when that batch was fetched. Reading those directly is what made the
+   * counter sit frozen and made a finished cell keep serving the rest of its
+   * buffered questions — the snapshot never caught up with the answers. This
+   * map is the live truth; the snapshot is only used to seed it. */
+  cells: new Map(),
+};
+
+const cellKey = (q) => `${q.skill}\u0000${q.difficulty}`;
+
+function seedCells(plan) {
+  wk.cells = new Map();
+  for (const c of [...plan.targets, ...plan.mastered, ...plan.exhausted]) {
+    wk.cells.set(`${c.skill}\u0000${c.difficulty}`, {
+      attempts: c.attempts,
+      correct: c.correct,
+      need: c.attempts + c.needs,     // threshold, already capped to cell size
+      available: c.available,
+    });
+  }
+}
+
+/* The counter in the question header.
+ *
+ * It has to answer two different questions depending on where the cell is:
+ * before it has enough answers, "how many more until this counts?"; after
+ * that, "how far is the accuracy from the target?" Showing only the first is
+ * what made it look stuck once the quota was met but the accuracy was not. */
+function cellChip(q) {
+  const st = cellState(q);
+  if (!st) return '';
+  const pct = st.accuracy == null ? null : Math.round(st.accuracy * 100);
+  const goal = Math.round(wk.opts.target * 100);
+
+  if (!st.proven) {
+    const left = Math.max(0, st.need - st.attempts);
+    return `<span class="cellchip" title="Answers needed before this cell's accuracy counts">
+      ${st.attempts}/${st.need}${pct == null ? '' : ` · ${pct}%`}
+      <i>${left} to go</i></span>`;
+  }
+  return `<span class="cellchip ${pct >= goal ? 'done' : 'short'}"
+    title="Quota met — now it needs to reach the target accuracy">
+    ${pct}% of ${goal}% <i>${st.attempts} answered</i></span>`;
+}
+
+function cellState(q) {
+  const k = cellKey(q);
+  let c = wk.cells.get(k);
+  if (!c && q.cell) {                 // fall back to the snapshot we were sent
+    c = {
+      attempts: q.cell.attempts,
+      correct: Math.round((q.cell.accuracy || 0) * q.cell.attempts),
+      need: q.cell.attempts + q.cell.needs,
+      available: 0,
+    };
+    wk.cells.set(k, c);
+  }
+  if (!c) return null;
+  const acc = c.attempts ? c.correct / c.attempts : null;
+  const proven = c.attempts >= c.need && c.need > 0;
+  return { ...c, accuracy: acc, proven, satisfied: proven && acc >= wk.opts.target };
+}
+
+function noteAnswer(q, correct) {
+  const k = cellKey(q);
+  const c = wk.cells.get(k) || { attempts: 0, correct: 0, need: 1, available: 0 };
+  c.attempts += 1;
+  if (correct) c.correct += 1;
+  wk.cells.set(k, c);
+}
+
+const wkParams = () => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(wk.opts)) {
+    if (v === '' || v == null) continue;
+    p.set(k, k === 'recent_first' ? (v ? '1' : '0') : v);
+  }
+  return p;
+};
+
+VIEWS.weakness = async function renderWeakness() {
+  main.innerHTML = skeleton(6);
+  const plan = await api('/api/weakness/plan?' + wkParams());
+  wk.plan = plan;
+  const o = plan.options;
+
+  const cellRow = (c, cls = '') => `
+    <li class="${cls}">
+      <span class="tag ${c.difficulty}">${esc(c.difficulty_name)}</span>
+      <span><strong>${esc(c.skill)}</strong>
+        <span class="muted">· ${esc(c.reason)}</span></span>
+      <div class="spacer"></div>
+      <span class="num muted">${c.attempts}/${c.total}</span>
+    </li>`;
+
+  main.innerHTML = `
+    <h1 class="serif">Weakness target</h1>
+    <p class="sub">
+      Drills one skill at one difficulty at a time, weakest first, using the
+      newest questions available. A cell stops appearing once it reaches your
+      target accuracy. It keeps going until you stop it.
+    </p>
+
+    <div class="card">
+      <div class="row">
+        <label class="fieldlet">Work up to
+          <select id="wk-target">
+            ${[0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95].map((v) =>
+              `<option value="${v}" ${Math.abs(o.target - v) < 1e-6 ? 'selected' : ''}>${Math.round(v * 100)}%</option>`).join('')}
+          </select>
+        </label>
+        <label class="fieldlet">Start with
+          <select id="wk-order">
+            <option value="easiest-first" ${o.order === 'easiest-first' ? 'selected' : ''}>Easiest first</option>
+            <option value="hardest-first" ${o.order === 'hardest-first' ? 'selected' : ''}>Hardest first</option>
+            <option value="weakest-first" ${o.order === 'weakest-first' ? 'selected' : ''}>Purely weakest</option>
+          </select>
+        </label>
+        <label class="fieldlet">Section
+          <select id="wk-test">
+            <option value="" ${!o.test ? 'selected' : ''}>Both</option>
+            <option value="1" ${String(o.test) === '1' ? 'selected' : ''}>Reading &amp; Writing</option>
+            <option value="2" ${String(o.test) === '2' ? 'selected' : ''}>Math</option>
+          </select>
+        </label>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <span class="fieldlet" style="gap:2px">Trust a cell after
+          <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400;font-size:11.5px">
+            fewer needed on Easy than on Hard</span>
+        </span>
+        ${[['E', 'Easy'], ['M', 'Medium'], ['H', 'Hard']].map(([d, label]) => `
+          <label class="fieldlet">${label}
+            <select id="wk-min-${d}">
+              ${[3, 5, 8, 10, 12, 15, 20, 25, 30].map((v) =>
+                `<option value="${v}" ${Number(o.min_attempts[d]) === v ? 'selected' : ''}>${v}</option>`).join('')}
+            </select>
+          </label>`).join('')}
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="wk-go" ${plan.remaining ? '' : 'disabled'}>
+          ${plan.remaining ? 'Begin targeting' : 'Nothing left to target'}
+        </button>
+        <span class="sub" style="margin:0">
+          ${plan.remaining} cell${plan.remaining === 1 ? '' : 's'} need work ·
+          ${plan.mastered.length} at target
+          ${plan.exhausted.length ? ` · ${plan.exhausted.length} out of questions` : ''}
+        </span>
+      </div>
+    </div>
+
+    <h3>Queue, weakest first</h3>
+    <div class="card">
+      <ul class="plan celllist">${plan.targets.slice(0, 12).map((c) => cellRow(c)).join('')}</ul>
+      ${plan.targets.length > 12
+        ? `<p class="sub" style="margin:12px 0 0">…and ${plan.targets.length - 12} more.</p>` : ''}
+    </div>
+
+    ${plan.exhausted.length ? `
+      <h3>Below target, no questions left</h3>
+      <div class="card">
+        <p class="sub">These are still costing you points, but every unseen question in
+          them is used up. Clearing your record for them, or enabling another source,
+          is the only way to get more.</p>
+        <ul class="plan celllist">${plan.exhausted.slice(0, 8).map((c) => cellRow(c, 'dry')).join('')}</ul>
+      </div>` : ''}
+
+    ${plan.mastered.length ? `
+      <h3>At target</h3>
+      <div class="card">
+        <ul class="plan celllist">${plan.mastered.slice(0, 8).map((c) => `
+          <li><span class="tag ${c.difficulty}">${esc(c.difficulty_name)}</span>
+            <span><strong>${esc(c.skill)}</strong>
+              <span class="muted">· ${(c.accuracy * 100).toFixed(0)}% of ${c.attempts}</span></span>
+          </li>`).join('')}</ul>
+      </div>` : ''}`;
+
+  const set = (k, v) => { wk.opts[k] = v; VIEWS.weakness(); };
+  $('#wk-target').onchange = (e) => set('target', Number(e.target.value));
+  $('#wk-order').onchange = (e) => set('order', e.target.value);
+  $('#wk-test').onchange = (e) => set('test', e.target.value);
+  ['E', 'M', 'H'].forEach((d) => {
+    $(`#wk-min-${d}`).onchange = (e) => set(`min_${d}`, Number(e.target.value));
+  });
+  if (plan.remaining) $('#wk-go').onclick = () => withTutorChoice(startWeakness);
+};
+
+async function startWeakness() {
+  const plan = wk.plan || await api('/api/weakness/plan?' + wkParams());
+  seedCells(plan);
+  flow.on = true;
+  flow.mode = 'weakness';
+  Object.assign(flow, { queue: [], streak: 0, best: 0, done: 0, correct: 0, seen: [] });
+  document.body.classList.add('focus-mode');
+  show('flow');
+  main.innerHTML = '<div class="empty">…</div>';
+  await flowFill();
+  if (!flow.queue.length) { flowExit(); return alert('Nothing left to target.'); }
+  const sess = await post('/api/session', { mode: 'weakness' });
+  state.session = sess.session_id;
+  flowNext();
 }
 
 // ---------------------------------------------------------------- analytics
 
 VIEWS.analytics = async function renderAnalytics() {
-  main.innerHTML = '<div class="empty">Loading…</div>';
+  main.innerHTML = skeleton(7);
   const a = await api('/api/analytics');
 
   if (!a.overview.attempts) {
@@ -1185,6 +1545,55 @@ VIEWS.analytics = async function renderAnalytics() {
   main.innerHTML = `
     <h1 class="serif">Analytics</h1>
     <p class="sub">Accuracy and pace at the finest grain the data allows.</p>
+
+    <h3>Predicted score</h3>
+    <div class="card">
+      <div class="tiles">
+        ${a.projection.sections.map((s) => `
+          <div class="tile">
+            <div class="k">${esc(s.test_name)}</div>
+            <div class="v">${s.enough ? s.score : '—'}</div>
+            <div class="n">${s.enough
+              ? `${pct(s.accuracy)} of ${s.attempts} answered`
+              : `needs ${s.needed} more answered`}</div>
+          </div>`).join('')}
+        <div class="tile">
+          <div class="k">Total</div>
+          <div class="v">${a.projection.total || '—'}</div>
+          <div class="n">${a.projection.total
+            ? 'both sections measured'
+            : 'needs both sections'}</div>
+        </div>
+      </div>
+      <p class="sub" style="margin:14px 0 0">
+        From official questions only, and it reads high: self-paced practice on a
+        mix you chose is not a timed adaptive test. Treat it as a direction, not
+        a prediction — a full-length Bluebook test is the only honest number.
+      </p>
+    </div>
+
+    <h3>Which topics are moving</h3>
+    <div class="card">
+      <p class="sub">Recent answers against the ones before them, within each skill.
+        Anything inside ten points either way is treated as flat — at these sample
+        sizes it is noise.</p>
+      <ul class="plan trendlist">
+        ${a.trends.filter((t) => t.direction !== 'unknown').slice(0, 10).map((t) => `
+          <li>
+            <span class="trend ${t.direction}">${
+              t.direction === 'up' ? '↑' : t.direction === 'down' ? '↓' : '→'}</span>
+            <span><strong>${esc(t.skill)}</strong>
+              <span class="muted">· ${pct(t.earlier)} → ${pct(t.recent)} · ${esc(t.note)}</span></span>
+            <div class="spacer"></div>
+            <span class="num ${t.direction === 'up' ? 'up' : t.direction === 'down' ? 'down' : ''}">
+              ${t.delta > 0 ? '+' : ''}${Math.round(t.delta * 100)}</span>
+          </li>`).join('') || '<li><span class="muted">Not enough answered in any one skill yet to compare.</span></li>'}
+      </ul>
+      ${a.trends.some((t) => t.direction === 'unknown') ? `
+        <p class="sub" style="margin:14px 0 0">
+          ${a.trends.filter((t) => t.direction === 'unknown').length} more skills have
+          too few answers to compare yet.</p>` : ''}
+    </div>
 
     <h3>Accuracy by skill and difficulty</h3>
     <div class="card">
@@ -1245,7 +1654,7 @@ function wireVintage(after) {
 // ---------------------------------------------------------------- settings
 
 VIEWS.settings = async function renderSettings() {
-  if (!$('.models')) main.innerHTML = '<div class="empty">Loading…</div>';
+  if (!$('.models')) main.innerHTML = skeleton(6);
   const [rt, tc, src] = await Promise.all([
     api('/api/runtime/status'), api('/api/tutor/config'), api('/api/sources'),
   ]);
@@ -1360,6 +1769,24 @@ VIEWS.settings = async function renderSettings() {
       </table>
     </div>
 
+    <h3>Official practice-test questions</h3>
+    <div class="card">
+      <label class="srcrow" style="border:0;padding:4px 0">
+        <input type="checkbox" id="allow-reserved" ${src.allow_reserved ? 'checked' : ''}>
+        <span>
+          <strong>Include questions that appear in official practice tests</strong>
+          <span class="pill ${src.allow_reserved ? '' : 'ok'}">${src.allow_reserved ? 'on' : 'held back'}</span><br>
+          <span class="muted" style="font-size:12.5px">
+            ${src.reserved_total.toLocaleString()} questions are also used in College Board's
+            full-length practice tests. They are held back by default: answering them here
+            turns your next Bluebook score into a memory check rather than a measurement,
+            and that score is the only realistic gauge you have. Turn this on only once you
+            have taken the practice tests you care about.
+          </span>
+        </span>
+      </label>
+    </div>
+
     <h3>Question sources</h3>
     <div class="card">
       ${src.sources.map((s) => `
@@ -1381,6 +1808,14 @@ VIEWS.settings = async function renderSettings() {
     </div>`;
 
   wireVintage(VIEWS.settings);
+  const ar = $('#allow-reserved');
+  if (ar) ar.onchange = async () => {
+    const res = await post('/api/reserved', { allow: ar.checked });
+    toast(res.allow_reserved
+      ? 'Practice-test questions are now in the pool'
+      : 'Practice-test questions held back again');
+    VIEWS.settings();
+  };
   $$('[data-start]').forEach((b) => (b.onclick = async () => {
     await post('/api/runtime/start', { model_id: b.dataset.start });
     pollRuntime();
@@ -1396,6 +1831,7 @@ VIEWS.settings = async function renderSettings() {
       base_url: $('#baseurl').value.trim(), api_key: $('#apikey').value.trim(),
     });
     $('#tutor-result').textContent = 'Saved.';
+    toast('Tutor settings saved');
   };
   $('#test-tutor').onclick = async () => {
     $('#tutor-result').textContent = 'Testing…';

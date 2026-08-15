@@ -11,8 +11,12 @@ from . import db, scheduler, sources
 # Official section timing. 64 min for 54 R&W questions, 70 min for 44 Math.
 PACE_TARGET_MS = {1: 71_000, 2: 95_000}
 
-# A skill needs this many attempts before we call a weakness real rather than noise.
-MIN_CONFIDENT_ATTEMPTS = 4
+# A skill needs this many attempts before its accuracy is evidence rather than
+# noise. Below it the percentage is still shown -- it is the best guess you
+# have -- but it is labelled provisional, and the area is ranked as the weakest
+# thing you own: an unmeasured skill is a worse position to be in than a
+# measured bad one, because you cannot even plan around it.
+MIN_CONFIDENT_ATTEMPTS = 20
 
 
 def overview(conn):
@@ -394,8 +398,16 @@ def time_distribution(conn):
 
 
 def weakest(conn, limit=6):
-    """Skills to drill next, with a plain-language reason for each."""
-    ranked = sorted(scheduler.skill_stats(conn), key=lambda s: -scheduler._priority(s))
+    """Skills to drill next, with a plain-language reason for each.
+
+    Anything below MIN_CONFIDENT_ATTEMPTS sorts above everything else,
+    regardless of its apparent accuracy: three right out of three is not a
+    strength, it is an unknown.
+    """
+    ranked = sorted(
+        scheduler.skill_stats(conn),
+        key=lambda s: (s["attempts"] >= MIN_CONFIDENT_ATTEMPTS, -scheduler._priority(s)),
+    )
     out = []
     for s in ranked:
         if len(out) >= limit:
@@ -406,7 +418,11 @@ def weakest(conn, limit=6):
         if s["attempts"] == 0:
             reason = "not tested yet"
         elif s["attempts"] < MIN_CONFIDENT_ATTEMPTS:
-            reason = f"only {s['attempts']} seen so far"
+            reason = (
+                f"{s['accuracy']:.0%} of only {s['attempts']} — not enough to judge"
+                if s["accuracy"] is not None
+                else f"only {s['attempts']} seen so far"
+            )
         elif s["accuracy"] is not None and s["accuracy"] < 0.6:
             reason = f"{s['accuracy']:.0%} accurate"
         elif slow:
@@ -484,6 +500,96 @@ def _interpolate(acc):
             return int(round((lo_s + frac * (hi_s - lo_s)) / 10.0) * 10)
         lo_a, lo_s = hi_a, hi_s
     return 800
+
+
+TREND_WINDOW = 10          # attempts per half when comparing recent to earlier
+TREND_MIN = 6              # below this there is nothing to compare
+
+
+def skill_trends(conn):
+    """Per-skill direction: is recent work better than earlier work?
+
+    Compares the most recent attempts against the ones before them, within the
+    same skill. Deliberately not a regression line -- with a few dozen points
+    per skill a slope reads as precision that is not there. Two halves and a
+    delta is as much as this data honestly supports, and it is what you
+    actually want to know: am I getting better at this or not.
+    """
+    enabled = sources.enabled_ids(conn)
+    ph = ",".join("?" * len(enabled))
+    rows = conn.execute(
+        f"""SELECT q.skill, q.test_name, a.correct, a.answered_at
+            FROM attempts a JOIN questions q ON q.external_id = a.external_id
+            WHERE q.source IN ({ph})
+            ORDER BY q.skill, a.answered_at""",
+        enabled,
+    ).fetchall()
+
+    by_skill = {}
+    for r in rows:
+        by_skill.setdefault(r["skill"], {"test_name": r["test_name"], "seq": []})
+        by_skill[r["skill"]]["seq"].append(r["correct"])
+
+    out = []
+    for skill, data in by_skill.items():
+        seq = data["seq"]
+        if len(seq) < TREND_MIN:
+            out.append({
+                "skill": skill, "test_name": data["test_name"],
+                "attempts": len(seq), "direction": "unknown",
+                "recent": None, "earlier": None, "delta": None,
+                "note": f"only {len(seq)} answered",
+            })
+            continue
+
+        half = min(TREND_WINDOW, len(seq) // 2)
+        recent, earlier = seq[-half:], seq[-2 * half:-half]
+        r_acc = sum(recent) / len(recent)
+        e_acc = sum(earlier) / len(earlier)
+        delta = r_acc - e_acc
+
+        # A tenth of a point either way is noise at these sample sizes.
+        direction = "flat"
+        if delta >= 0.10:
+            direction = "up"
+        elif delta <= -0.10:
+            direction = "down"
+
+        out.append({
+            "skill": skill, "test_name": data["test_name"],
+            "attempts": len(seq), "direction": direction,
+            "recent": r_acc, "earlier": e_acc, "delta": delta,
+            "window": half,
+            "note": f"last {half} vs previous {half}",
+        })
+
+    order = {"down": 0, "flat": 1, "unknown": 2, "up": 3}
+    return sorted(out, key=lambda t: (order[t["direction"]], t["delta"] or 0))
+
+
+def section_projection(conn):
+    """Predicted score per section, with the evidence behind it.
+
+    Computed from official questions only -- community questions are not
+    calibrated to real exam difficulty, so folding them in would make the
+    number mean less, not more.
+    """
+    by_test = _by_test(conn, source="collegeboard")
+    scores = project_score(by_test)
+
+    out = []
+    for test_id, data in sorted(by_test.items()):
+        name = data["test_name"]
+        out.append({
+            "test": test_id,
+            "test_name": name,
+            "attempts": data["attempts"],
+            "accuracy": data["accuracy"],
+            "score": scores.get(name),
+            "enough": data["attempts"] >= MIN_ATTEMPTS_FOR_PROJECTION,
+            "needed": max(0, MIN_ATTEMPTS_FOR_PROJECTION - data["attempts"]),
+        })
+    return {"sections": out, "total": scores.get("Total")}
 
 
 def study_plan(conn, minutes=30):
