@@ -13,7 +13,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import db, runtime, scheduler, sources, stats, tutor
+from . import db, runtime, scheduler, sources, stats, tutor, weakness
 
 def _static_dir():
     """Where the frontend lives, in a checkout and inside a frozen build.
@@ -180,6 +180,8 @@ class Handler(BaseHTTPRequestHandler):
                         "timeline": stats.timeline(conn),
                         "time_distribution": stats.time_distribution(conn),
                         "weakest": stats.weakest(conn, limit=8),
+                        "trends": stats.skill_trends(conn),
+                        "projection": stats.section_projection(conn),
                         "target_accuracy": stats.TARGET_ACCURACY,
                     }
                 )
@@ -194,6 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "vintages": stats.vintages(conn),
                         "min_created": scheduler.min_created(conn),
+                        "allow_reserved": scheduler.allow_reserved(conn),
                     }
                 )
 
@@ -204,6 +207,10 @@ class Handler(BaseHTTPRequestHandler):
                         "sources": stats.by_source(conn),
                         "vintages": stats.vintages(conn),
                         "min_created": scheduler.min_created(conn),
+                        "allow_reserved": scheduler.allow_reserved(conn),
+                        "reserved_total": conn.execute(
+                            "SELECT COUNT(*) FROM questions WHERE in_practice_test = 1"
+                        ).fetchone()[0],
                         "enabled": sources.enabled_ids(conn),
                         "catalog": list(sources.SOURCES.values()),
                         "not_fetched": list(sources.NOT_FETCHED.values()),
@@ -231,6 +238,27 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/bank":
                 return self._send(self._bank(q))
+
+            if route == "/api/weakness/plan":
+                one = lambda k, d=None: (q.get(k) or [d])[0]
+                return self._send(weakness.plan(_conn(), {
+                    "target": one("target"),
+                    "min_E": one("min_E"), "min_M": one("min_M"), "min_H": one("min_H"),
+                    "order": one("order"), "test": one("test"),
+                    "recent_first": one("recent_first") != "0",
+                }))
+
+            if route == "/api/weakness/queue":
+                one = lambda k, d=None: (q.get(k) or [d])[0]
+                opts = {
+                    "target": one("target"),
+                    "min_E": one("min_E"), "min_M": one("min_M"), "min_H": one("min_H"),
+                    "order": one("order"), "test": one("test"),
+                    "recent_first": one("recent_first") != "0",
+                }
+                exclude = [x for x in (one("exclude", "") or "").split(",") if x]
+                return self._send({"questions": weakness.queue(
+                    _conn(), opts, n=min(40, max(5, int(one("n", "20")))), exclude=exclude)})
 
             if route == "/api/bank/queue":
                 return self._send({"questions": self._bank_queue(q)})
@@ -292,6 +320,16 @@ class Handler(BaseHTTPRequestHandler):
                            "api_key", "temperature", "max_tokens"}
                 tutor.save_config({k: v for k, v in body.items() if k in allowed})
                 return self._send({"config": tutor.public_config()})
+
+            if route == "/api/reserved":
+                conn = _conn()
+                on = bool(self._body().get("allow"))
+                return self._send({"allow_reserved": scheduler.set_allow_reserved(conn, on)})
+
+            if route == "/api/answer/undo":
+                eid = self._body().get("external_id")
+                ok = scheduler.undo_attempt(_conn(), eid)
+                return self._send({"undone": bool(ok)})
 
             if route == "/api/tutor/explain":
                 return self._explain()
@@ -380,6 +418,11 @@ class Handler(BaseHTTPRequestHandler):
             where.append("(q.stem LIKE ? OR q.stimulus LIKE ?)")
             params += [f"%{search}%", f"%{search}%"]
 
+        if one("reserved") == "hide":
+            where.append("q.in_practice_test = 0")
+        elif one("reserved") == "only":
+            where.append("q.in_practice_test = 1")
+
         if one("unseen") == "1":
             where.append("a.id IS NULL")
         if one("missed") == "1":
@@ -448,6 +491,11 @@ class Handler(BaseHTTPRequestHandler):
         # Never hand out a question whose figure is missing — it cannot be
         # answered, and being asked one feels like your own failure.
         where, params = ["q.stem IS NOT NULL", "q.stem != ''", "q.unusable = 0"], []
+        # This path used to skip the reservation rule entirely, so starting a
+        # run from the bank quietly burned questions held back for the official
+        # practice tests. It now obeys the same setting as everything else.
+        if not scheduler.allow_reserved(_conn()):
+            where.append("q.in_practice_test = 0")
         for key, col in (("test", "q.test"), ("domain", "q.domain"),
                          ("skill", "q.skill"), ("difficulty", "q.difficulty"),
                          ("source", "q.source")):

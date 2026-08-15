@@ -40,12 +40,30 @@ def _source_filter(conn, alias="q"):
     # browsable but must never be served as practice.
     clause = f"AND {alias}.source IN ({placeholders}) AND {alias}.unusable = 0"
     params = list(ids)
+    if not allow_reserved(conn):
+        clause += f" AND {alias}.in_practice_test = 0"
 
     cutoff = min_created(conn)
     if cutoff:
         clause += f" AND {alias}.created_at IS NOT NULL AND {alias}.created_at >= ?"
         params.append(cutoff)
     return clause, params
+
+
+def allow_reserved(conn):
+    """Whether questions that also appear in official practice tests may be served.
+
+    Off by default. Answering them here turns a Bluebook practice test from a
+    measurement into a memory check, and that test is the only realistic gauge
+    of where you stand — so it is opt-in, and the cost is stated where you turn
+    it on rather than buried.
+    """
+    return db.get_meta(conn, "allow_reserved") == "1"
+
+
+def set_allow_reserved(conn, on):
+    db.set_meta(conn, "allow_reserved", "1" if on else "0")
+    return allow_reserved(conn)
 
 
 def min_created(conn):
@@ -179,8 +197,10 @@ def due_reviews(conn, limit, test=None):
 def _unseen_for_skill(conn, skill, difficulties, exclude, allow_practice_test=False):
     """One unattempted question in this skill, preferring the target difficulty."""
     placeholders = ",".join("?" * len(exclude)) if exclude else "''"
-    reserve = "" if allow_practice_test else "AND q.in_practice_test = 0"
+    reserve = ""
     sclause, sparams = _source_filter(conn)
+    if allow_practice_test:
+        sclause = sclause.replace("AND q.in_practice_test = 0", "")
     for diff in difficulties + [None]:
         sql = f"""
             SELECT q.* FROM questions q
@@ -208,8 +228,12 @@ def select_questions(
     remain a real measurement rather than a memory check.
     """
     picked, seen = [], set()
-    reserve = "" if allow_practice_test else "AND q.in_practice_test = 0"
+    # _source_filter already applies the reservation rule from the setting;
+    # allow_practice_test is the per-call override.
+    reserve = ""
     sclause, sparams = _source_filter(conn)
+    if allow_practice_test:
+        sclause = sclause.replace("AND q.in_practice_test = 0", "")
 
     if skill:  # explicit drill: one skill, nothing else
         rows = conn.execute(
@@ -319,6 +343,42 @@ def _to_float(s):
         num, _, den = s.partition("/")
         return float(num) / float(den)
     return float(s)
+
+
+def undo_attempt(conn, external_id):
+    """Erase the most recent attempt at a question, for a misclick.
+
+    A mis-tap is not data. Left in place it drags down the skill's accuracy,
+    promotes the skill up the weakness ranking, and schedules a review for a
+    question you actually knew — so this deletes the row rather than marking it.
+
+    Spaced-repetition state is only partly reversible: the review row is removed
+    when nothing else has been attempted for that question, and otherwise a
+    lapse is taken back. The exact prior interval is not restored, and the next
+    real answer re-derives it anyway.
+    """
+    row = conn.execute(
+        "SELECT id, correct FROM attempts WHERE external_id = ? "
+        "ORDER BY answered_at DESC, id DESC LIMIT 1",
+        (external_id,),
+    ).fetchone()
+    if not row:
+        return False
+
+    conn.execute("DELETE FROM attempts WHERE id = ?", (row["id"],))
+    remaining = conn.execute(
+        "SELECT COUNT(*) AS n FROM attempts WHERE external_id = ?", (external_id,)
+    ).fetchone()["n"]
+
+    if remaining == 0:
+        conn.execute("DELETE FROM reviews WHERE external_id = ?", (external_id,))
+    elif not row["correct"]:
+        conn.execute(
+            "UPDATE reviews SET lapses = MAX(0, lapses - 1) WHERE external_id = ?",
+            (external_id,),
+        )
+    conn.commit()
+    return True
 
 
 def record_attempt(conn, external_id, response, correct, elapsed_ms, session_id=None):

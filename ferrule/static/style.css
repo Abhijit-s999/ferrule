@@ -398,24 +398,44 @@ select:hover, input:hover { border-color: var(--ink-3); }
    through and faded, not hidden. You can still pick it — sometimes you rule
    something out and change your mind, and the tool should not stop you. */
 
-.choice { position: relative; padding-right: 42px; }
+.choice { position: relative; }
 .choice.eliminated { opacity: .45; }
 .choice.eliminated .letter { text-decoration: line-through; }
 .choice.eliminated > span:not(.letter):not(.strike) { text-decoration: line-through; }
 
+/* The strike sits BESIDE the answer, never on top of it, and is a full-size
+   target in its own right — a small control overlapping a large one turns
+   every near-miss into an answer you did not mean to give. */
+.choice-row { display: flex; align-items: stretch; gap: 8px; }
+.choice-row > .choice { flex: 1; min-width: 0; padding-right: 15px; }
+
 .strike {
-  position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
-  width: 22px; height: 22px; border-radius: 50%;
-  display: grid; place-items: center;
-  font: 600 15px var(--sans); line-height: 1;
-  color: var(--ink-3); border: 1px solid transparent;
-  opacity: 0; cursor: pointer;
-  transition: opacity var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
-              border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+  flex: 0 0 46px;
+  border: 1px solid var(--rule-2); border-radius: var(--r);
+  background: transparent; color: var(--ink-3);
+  cursor: pointer; display: grid; place-items: center;
+  font: inherit;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+              background var(--t-fast) var(--ease);
 }
-.choice:hover .strike, .choice:focus-within .strike { opacity: 1; }
+.strike-letter {
+  font: 600 15px var(--sans); position: relative; line-height: 1;
+}
+.strike-letter::after {
+  content: ""; position: absolute; left: -4px; right: -4px; top: 50%;
+  height: 1.5px; background: currentColor; transform: scaleX(0);
+  transform-origin: center; transition: transform var(--t-fast) var(--ease);
+}
 .strike:hover { color: var(--bad); border-color: var(--bad); background: var(--bad-bg); }
-.choice.eliminated .strike { opacity: 1; color: var(--bad); border-color: var(--rule-2); }
+.strike:hover .strike-letter::after { transform: scaleX(1); }
+.choice.eliminated + .strike,
+.choice-row:has(.choice.eliminated) .strike {
+  color: var(--bad); border-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+}
+.choice-row:has(.choice.eliminated) .strike-letter::after { transform: scaleX(1); }
+
+@media (max-width: 620px) { .strike { flex-basis: 40px; } }
 
 /* ---- highlighting ---------------------------------------------------------
    Yellow on paper is unreadable on a dark ground, so the mark is a wash of the
@@ -965,3 +985,122 @@ figure figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
   transition: opacity var(--t) var(--ease), transform var(--t) var(--ease);
 }
 .zoomtoast.on { opacity: .92; transform: translateX(-50%) translateY(0); }
+
+
+/* ---- weakness target ---- */
+
+.fieldlet {
+  display: inline-flex; flex-direction: column; gap: 4px;
+  font-size: 11px; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: .07em; font-weight: 600;
+}
+.fieldlet select { text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+.celllist li { gap: 10px; }
+.celllist li.dry { opacity: .75; }
+
+/* Progress of the cell being drilled, shown next to the skill name. */
+.cellchip {
+  margin-left: auto; font: 11.5px var(--mono); color: var(--ink-3);
+  border: 1px solid var(--rule); border-radius: 20px; padding: 2px 9px;
+  white-space: nowrap;
+}
+
+/* A cell with too few attempts to trust: shown, but visibly provisional. */
+.heat-cell.thin { box-shadow: inset 0 0 0 1px var(--rule-2); }
+.heat-cell.thin b { opacity: .85; }
+.pill.thin { background: var(--surface-2); color: var(--ink-3); }
+
+.cellchip i { font-style: normal; opacity: .7; margin-left: 6px; }
+.cellchip.done { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
+.cellchip.short { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+
+/* ---- topic trends ---- */
+
+.trendlist li { gap: 10px; }
+.trend {
+  flex: 0 0 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 13px; font-weight: 700;
+  background: var(--surface-2); color: var(--ink-3);
+}
+.trend.up   { background: var(--good-bg); color: var(--good); }
+.trend.down { background: var(--bad-bg);  color: var(--bad); }
+.num.up   { color: var(--good); }
+.num.down { color: var(--bad); }
+
+/* ---------------------------------------------------------------- polish */
+
+/* Cross-fade between screens. Short, and one direction only: a screen change
+   should feel like a page turn, not a slideshow. */
+@media not (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root) { animation: vt-out 130ms var(--ease) both; }
+  ::view-transition-new(root) { animation: vt-in 240ms var(--ease) both; }
+}
+@keyframes vt-out { to { opacity: 0; transform: translateY(-4px); } }
+@keyframes vt-in  { from { opacity: 0; transform: translateY(6px); } }
+
+/* Skeletons: shaped like the content, so the layout does not jump when it
+   arrives. */
+.skel-wrap { display: flex; flex-direction: column; gap: 11px; padding: 4px 0; }
+.skel {
+  background: linear-gradient(90deg,
+    var(--surface-2) 25%, var(--rule) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s infinite linear;
+  border-radius: var(--r);
+}
+.skel-title { height: 26px; width: 46%; margin-bottom: 6px; }
+.skel-row { height: 46px; }
+@media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
+
+/* Toast: confirms an action that changed nothing you can see. */
+.toast {
+  position: fixed; left: 50%; bottom: 26px;
+  transform: translateX(-50%) translateY(10px) scale(.98);
+  z-index: 95; max-width: min(520px, calc(100vw - 40px));
+  padding: 10px 16px; border-radius: 22px;
+  background: var(--ink); color: var(--paper);
+  font-size: 13.5px; font-weight: 500; letter-spacing: .005em;
+  box-shadow: var(--shadow-lg);
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--t) var(--ease), transform var(--t) var(--ease);
+}
+.toast.on { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+
+button.is-busy { cursor: progress; }
+button.is-busy .spin { margin-right: 7px; }
+
+.pill.warnpill {
+  background: var(--bad-bg); color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 30%, transparent);
+}
+
+/* Scrollbars that belong to the design rather than the OS. */
+* { scrollbar-width: thin; scrollbar-color: var(--rule-2) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--rule-2); border-radius: 6px;
+  border: 3px solid transparent; background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background-clip: content-box; background-color: var(--ink-3); }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* Nothing in a desktop app should be selectable-by-accident chrome; the
+   passage and the tutor's reply are the exceptions that must stay selectable. */
+header, nav, .flowfoot, .cellchip, .kbd, .tag { user-select: none; }
+
+/* Choices settle in rather than appearing all at once. */
+.choices .choice-row { animation: rise 260ms var(--ease) both; }
+.choices .choice-row:nth-child(1) { animation-delay: 30ms; }
+.choices .choice-row:nth-child(2) { animation-delay: 65ms; }
+.choices .choice-row:nth-child(3) { animation-delay: 100ms; }
+.choices .choice-row:nth-child(4) { animation-delay: 135ms; }
+
+/* The correct answer earns a beat of attention; the wrong one just shakes. */
+.choice.correct { animation: pop 340ms var(--ease); }
+.choice.wrong   { animation: nudge 320ms var(--ease); }
+@keyframes pop   { 40% { transform: scale(1.012); } 100% { transform: none; } }
+@keyframes nudge {
+  20% { transform: translateX(-4px); } 45% { transform: translateX(3px); }
+  70% { transform: translateX(-2px); } 100% { transform: none; }
+}
