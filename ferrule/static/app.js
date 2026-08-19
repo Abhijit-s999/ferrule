@@ -111,13 +111,34 @@ async function busy(btn, label, fn) {
 $$('nav button').forEach((b) => (b.onclick = () => show(b.dataset.view)));
 
 const VIEWS = {};
+
+/* Every view paints a skeleton and then awaits its data. If that await
+ * rejects and nobody catches it, the skeleton is what the user is left
+ * looking at -- an app that appears to load forever with nothing to click and
+ * nothing to report. So a failed view renders the failure instead. */
+function viewFailed(view, err) {
+  main.innerHTML = `
+    <h1 class="serif">This screen could not load</h1>
+    <div class="card">
+      <div class="log">${esc(err && err.message ? err.message : String(err))}</div>
+      <button class="primary" id="retry" style="margin-top:12px">Try again</button>
+    </div>`;
+  const b = $('#retry');
+  if (b) b.onclick = () => show(view);
+}
+
 function show(view) {
   const render = () => {
     state.view = view;
     $$('nav button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
     main.className = ['analytics', 'bank'].includes(view) ? 'wide' : '';
     if (view !== 'practice') stopClock();
-    VIEWS[view]();
+    try {
+      const r = VIEWS[view]();
+      if (r && typeof r.catch === 'function') r.catch((e) => viewFailed(view, e));
+    } catch (e) {
+      viewFailed(view, e);
+    }
   };
 
   // A cross-fade between screens, where the browser can do it without cost.
@@ -225,6 +246,12 @@ VIEWS.home = async function renderHome() {
   main.innerHTML = `
     <h1 class="serif">Where are you losing points?</h1>
     <p class="sub">Practice picked by weakness, exam weighting, and what you have already missed.</p>
+    ${ov.bank_pending ? `<div class="card" id="resume" style="margin:0 0 18px">
+      <strong>${ov.bank_pending.toLocaleString()} questions were never downloaded.</strong>
+      <p class="sub" style="margin:6px 0 12px">A download was interrupted, so part of the bank
+        is missing. Everything below still works — this just fills in the rest.</p>
+      <button class="primary" id="resumedl">Finish downloading</button>
+    </div>` : ''}
 
     <div class="tiles stagger">
       <div class="tile"><div class="k">Answered</div><div class="v">${ov.attempts}</div>
@@ -270,6 +297,12 @@ VIEWS.home = async function renderHome() {
     </div>`;
 
   wireVintage(VIEWS.home);
+
+  const rdl = $('#resumedl');
+  if (rdl) rdl.onclick = () => busy(rdl, 'Starting…', async () => {
+    await post('/api/fetch/start', {});
+    resumeProgress();
+  });
   // Read the selections now: the tutor gate replaces this markup, so reading
   // them inside the callback would find nothing.
   $('#go').onclick = () => {
@@ -279,19 +312,80 @@ VIEWS.home = async function renderHome() {
   };
 };
 
+/* Progress for a download resumed from the home screen.
+ *
+ * Deliberately does not take over the screen: the bank is already usable, so
+ * the user carries on practising while the remainder arrives behind them. */
+async function resumeProgress() {
+  const box = $('#resume');
+  if (!box) return;
+  let st;
+  try { st = await api('/api/fetch/status'); } catch { return; }
+  if (st.phase === 'error') {
+    box.innerHTML = `<div class="log">${esc(st.error)}</div>`;
+    return;
+  }
+  if (st.phase === 'done') {
+    toast('Question bank complete');
+    return VIEWS.home();
+  }
+  box.innerHTML = `<strong>Finishing the download</strong>
+    <div class="progress" style="margin:10px 0"><div style="width:${
+      Math.min(99, ((st.count || 0) / 3250) * 100)}%"></div></div>
+    <p class="sub" style="margin:0">${esc(st.detail || 'Starting…')}</p>`;
+  setTimeout(() => { if (state.view === 'home') resumeProgress(); }, 1500);
+}
+
+/* First run: the bank has to be downloaded before anything else works.
+ *
+ * This screen is the only thing a new user sees, so it has to distinguish
+ * "slow" from "stuck" on its own. It reports elapsed time alongside the count,
+ * and it never leaves the user without a next action -- an error carries a
+ * retry, and a network that inspects TLS (common on school and office wifi)
+ * gets an explicit way through rather than a dead end. */
+let fetchStartedAt = 0;
+
 async function renderFirstRun() {
-  const st = await api('/api/fetch/status');
+  let st;
+  try {
+    st = await api('/api/fetch/status');
+  } catch (e) {
+    // Losing the status endpoint must not leave a skeleton on screen forever.
+    main.innerHTML = `<h1 class="serif">Welcome</h1>
+      <div class="card"><div class="log">Could not reach the ferrule backend: ${esc(e.message)}</div>
+      <button class="primary" id="dl" style="margin-top:12px">Try again</button></div>`;
+    $('#dl').onclick = renderFirstRun;
+    return;
+  }
+
   const running = st.phase === 'running';
+  const count = st.count || 0;
+  if (running && !fetchStartedAt) fetchStartedAt = Date.now();
+  if (!running) fetchStartedAt = 0;
+
+  const elapsed = fetchStartedAt ? Math.floor((Date.now() - fetchStartedAt) / 1000) : 0;
+  const tlsish = /certificate|TLS|SSL/i.test(st.error || '');
+
   main.innerHTML = `
     <h1 class="serif">Welcome</h1>
     <p class="sub">ferrule needs the official SAT question bank before you can practise.
       About 3,250 questions, roughly four minutes, once.</p>
     <div class="card">
       ${running || st.phase === 'done' ? `
-        <div class="progress" style="margin:4px 0 10px"><div style="width:${st.count ? Math.min(99, (st.count / 3250) * 100) : 4}%"></div></div>
-        <p class="sub" style="margin:0">${esc(st.detail || 'Starting…')} — ${st.count.toLocaleString()} stored</p>
+        <div class="progress" style="margin:4px 0 10px"><div style="width:${count ? Math.min(99, (count / 3250) * 100) : 4}%"></div></div>
+        <p class="sub" style="margin:0">${esc(st.detail || 'Starting…')} — ${count.toLocaleString()} stored${
+          elapsed ? ` · ${clock(elapsed)} elapsed` : ''}</p>
+        ${elapsed > 90 && !count ? `<p class="sub" style="margin:8px 0 0">
+          Nothing stored yet after ${clock(elapsed)}. The tags are fetched first, so a slow
+          connection can sit here a while — leave it running. If it never moves, quit and
+          reopen to retry.</p>` : ''}
       ` : st.phase === 'error' ? `
         <div class="log">${esc(st.error)}</div>
+        ${tlsish ? `<label class="srcrow" style="border:0;padding:10px 0 4px">
+          <input type="checkbox" id="insecure">
+          <span>Allow intercepted TLS — only on a network you trust, such as a school
+            or office one that inspects traffic</span>
+        </label>` : ''}
         <button class="primary" id="dl" style="margin-top:12px">Try again</button>
       ` : `
         <label class="srcrow" style="border:0;padding:4px 0 14px">
@@ -302,9 +396,14 @@ async function renderFirstRun() {
       `}
       <p class="sub" style="margin:16px 0 0">Questions stay on your machine. See ATTRIBUTION.md for sources.</p>
     </div>`;
+
   const btn = $('#dl');
   if (btn) btn.onclick = async () => {
-    await post('/api/fetch/start', { with_opensat: !!($('#opensat') || {}).checked });
+    await post('/api/fetch/start', {
+      with_opensat: !!($('#opensat') || {}).checked,
+      insecure: !!($('#insecure') || {}).checked,
+    });
+    fetchStartedAt = Date.now();
     renderFirstRun();
   };
   if (running) setTimeout(() => { if (state.view === 'home') renderFirstRun(); }, 1200);

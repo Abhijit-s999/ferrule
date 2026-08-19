@@ -78,8 +78,10 @@ def _request(url, payload=None, insecure=False, timeout=45, retries=4):
                 getattr(e, "reason", None), ssl.SSLCertVerificationError
             ):
                 raise FetchError(
-                    "TLS certificate verification failed. If you are on a network that "
-                    "intercepts TLS, re-run with --insecure."
+                    "TLS certificate verification failed. Some school and office "
+                    "networks inspect encrypted traffic, which looks like this. "
+                    "Use the \u201callow intercepted TLS\u201d retry in the app, or "
+                    "--insecure on the command line, or try another network."
                 ) from e
         time.sleep(1.5 * (2**attempt))
     raise FetchError(f"{url} failed after {retries} attempts: {last}")
