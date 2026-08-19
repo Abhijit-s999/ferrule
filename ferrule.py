@@ -133,6 +133,66 @@ def cmd_selftest(args):
         problems.append(f"database: {e}")
         print(f"  FAIL database: {e}")
 
+    # The first-run download reports progress from a second thread. That
+    # thread used to read the fetch thread's sqlite connection, which raises
+    # ProgrammingError on first use and killed the reporter outright: the
+    # download itself ran fine while the UI sat on "Starting…" and 0 stored
+    # for four minutes, which every user reads as a hang. Invisible to any
+    # check that only asserts the download eventually finishes, so it is
+    # asserted directly here -- offline, against a stub fetch.
+    try:
+        import tempfile
+        import threading as _th
+        import time as _time
+
+        from ferrule import fetch as _fetch
+        from ferrule import server as _srv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _srv._db_path = os.path.join(tmp, "probe.db")
+            probe = db.connect(_srv._db_path)
+            probe.execute(
+                "INSERT INTO questions (external_id, test, test_name, domain, "
+                "skill, difficulty, stem) VALUES "
+                "('probe-1', 1, 'Reading and Writing', 'INI', 'Central Ideas', 'E', 'x')"
+            )
+            probe.commit()
+            probe.close()
+
+            real_run = _fetch.run
+            _fetch.run = lambda conn, **kw: _time.sleep(1.4)
+            try:
+                _srv.FETCH_STATE.update(
+                    phase="running", detail="Starting…", error="", count=0)
+                worker = _th.Thread(target=_srv._run_fetch, args=(False,))
+                worker.start()
+                # Sample WHILE it runs. Checking the final count proves
+                # nothing: _run_fetch writes that itself on the way out, so a
+                # dead reporter still ends on the right number having shown
+                # the user nothing for the whole download.
+                seen_during = 0
+                while worker.is_alive():
+                    if _srv.FETCH_STATE.get("phase") == "running":
+                        seen_during = max(seen_during, _srv.FETCH_STATE.get("count", 0))
+                    _time.sleep(0.1)
+                worker.join(timeout=20)
+            finally:
+                _fetch.run = real_run
+
+            phase = _srv.FETCH_STATE.get("phase")
+            if phase != "done":
+                problems.append(f"fetch progress: ended on {phase!r}, not 'done'")
+                print(f"  FAIL fetch progress ended on {phase!r}")
+            elif seen_during < 1:
+                problems.append("fetch progress: reporter never updated mid-run")
+                print("  FAIL fetch progress never updated mid-run "
+                      "(reporter thread died -- the UI would look hung)")
+            else:
+                print("  ok   fetch reports progress while running")
+    except Exception as e:
+        problems.append(f"fetch progress: {e}")
+        print(f"  FAIL fetch progress: {e}")
+
     if problems:
         print(f"\nselftest FAILED: {', '.join(problems)}", file=sys.stderr)
         return 1

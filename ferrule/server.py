@@ -41,37 +41,65 @@ FETCH_STATE = {"phase": "idle", "detail": "", "error": "", "count": 0}
 _fetch_lock = threading.Lock()
 
 
-def _run_fetch(with_opensat):
-    """Download the question bank in the background, reporting progress."""
+def _run_fetch(with_opensat, insecure=False):
+    """Download the question bank in the background, reporting progress.
+
+    Everything is inside the try: a failure to even open the database used to
+    leave the phase on "running" with no error, which the first-run screen
+    renders as a progress bar that never moves and never explains itself.
+    """
     import io
     from contextlib import redirect_stdout
 
     from . import fetch as fetch_mod
 
-    conn = db.connect(_db_path)
     buf = io.StringIO()
 
     def watch():
-        # fetch.run prints progress; surface the latest line to the UI.
+        # This thread needs a connection of its own. sqlite3 objects belong to
+        # the thread that created them, so reading the fetch thread's handle
+        # here raised ProgrammingError on the very first tick and killed the
+        # reporter outright -- the download ran to completion while the UI sat
+        # on "Starting…" and 0 stored, which reads as a hang.
+        own = None
+        try:
+            own = db.connect(_db_path)
+        except Exception:
+            pass                     # carry on with log lines only
         while FETCH_STATE["phase"] == "running":
             text = buf.getvalue().strip().splitlines()
             if text:
                 FETCH_STATE["detail"] = text[-1].strip()
-            FETCH_STATE["count"] = db.question_count(conn)
+            if own is not None:
+                try:
+                    FETCH_STATE["count"] = db.question_count(own)
+                except Exception:
+                    pass             # a transient read must not stop reporting
             time.sleep(0.6)
+        if own is not None:
+            try:
+                own.close()
+            except Exception:
+                pass
 
-    FETCH_STATE.update(phase="running", detail="Starting…", error="")
+    # The caller sets this too, before the thread exists, so the UI cannot
+    # observe an "idle" gap. Repeated here so the function is still correct
+    # when driven directly -- the watch loop below runs only while it holds.
+    FETCH_STATE.update(phase="running", error="")
     threading.Thread(target=watch, daemon=True).start()
+    conn = None
     try:
+        conn = db.connect(_db_path)
         with redirect_stdout(buf):
-            fetch_mod.run(conn, with_opensat=with_opensat)
+            fetch_mod.run(conn, with_opensat=with_opensat, insecure=insecure)
         FETCH_STATE.update(
             phase="done", detail="Done.", count=db.question_count(conn)
         )
     except Exception as e:
-        FETCH_STATE.update(phase="error", error=str(e))
+        FETCH_STATE.update(phase="error", error=str(e) or e.__class__.__name__)
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _conn():
@@ -351,11 +379,22 @@ class Handler(BaseHTTPRequestHandler):
                 with _fetch_lock:
                     if FETCH_STATE["phase"] == "running":
                         return self._send(FETCH_STATE)
-                    opensat = bool(self._body().get("with_opensat"))
+                    body = self._body()
+                    opensat = bool(body.get("with_opensat"))
+                    insecure = bool(body.get("insecure"))
+                    # Mark it running here rather than inside the thread. The
+                    # first-run screen polls status the moment this returns,
+                    # and a thread that has not reached its first statement
+                    # yet would still answer "idle" -- which that screen reads
+                    # as "not started", so it stops polling and waits forever
+                    # while the download runs invisibly behind it.
+                    FETCH_STATE.update(
+                        phase="running", detail="Starting…", error="", count=0
+                    )
                     threading.Thread(
-                        target=_run_fetch, args=(opensat,), daemon=True
+                        target=_run_fetch, args=(opensat, insecure), daemon=True
                     ).start()
-                return self._send({"phase": "running"})
+                return self._send(dict(FETCH_STATE))
 
             if route == "/api/runtime/start":
                 # "Start" now means select + download; loading happens lazily.

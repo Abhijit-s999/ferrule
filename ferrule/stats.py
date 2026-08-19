@@ -66,6 +66,11 @@ def overview(conn):
         "due_reviews": due,
         "bank_size": available,
         "bank_total": db.question_count(conn),
+        # Indexed but never downloaded. Non-zero means a fetch was interrupted,
+        # and the bank is usable but incomplete -- the UI offers to finish it.
+        "bank_pending": conn.execute(
+            "SELECT COUNT(*) AS n FROM questions WHERE stem IS NULL OR stem = ''"
+        ).fetchone()["n"],
         "enabled_sources": enabled,
         "by_source": by_source(conn),
         # Scored from official questions only. Community questions are not
