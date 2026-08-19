@@ -228,3 +228,92 @@ def has_latex(html):
         re.search(r"\\(?:frac|sqrt|pi|cdot|times|pm|neq|le|ge|circ|cap|log|text)\b"
                   r"|\\\(|\\\[", html)
     )
+
+
+# ---------------------------------------------------------------------------
+# MathML Core compatibility
+# ---------------------------------------------------------------------------
+
+_MFENCED = re.compile(
+    r"<mfenced([^>]*)>((?:(?!<mfenced\b)(?!</mfenced>).)*)</mfenced>",
+    re.S | re.I,
+)
+_ATTR = lambda name, attrs, default: (
+    (re.search(rf'{name}\s*=\s*"([^"]*)"', attrs, re.I)
+     or re.search(rf"{name}\s*=\s*'([^']*)'", attrs, re.I))
+    or None
+)
+
+
+def _top_level_children(inner):
+    """Split a MathML fragment into its top-level elements."""
+    out, depth, start, i = [], 0, 0, 0
+    for m in re.finditer(r"<(/?)([a-zA-Z][\w.-]*)([^>]*?)(/?)>", inner):
+        closing, _name, _attrs, selfclose = m.groups()
+        if selfclose:
+            if depth == 0:
+                out.append(inner[m.start():m.end()])
+                start = m.end()
+            continue
+        if closing:
+            depth -= 1
+            if depth == 0:
+                out.append(inner[start:m.end()])
+                start = m.end()
+        else:
+            if depth == 0:
+                start = m.start()
+            depth += 1
+    tail = inner[start:].strip()
+    if tail:
+        out.append(tail)
+    return [c for c in (x.strip() for x in out) if c]
+
+
+def fix_mathml(html):
+    """Rewrite <mfenced> as MathML Core, so its brackets are actually drawn.
+
+    <mfenced> was dropped from MathML Core, and Chromium renders its children
+    while silently discarding the fences. College Board uses it for every
+    bracket in the bank, so `f(x)` displayed as `f x`, `(x+2)(x-3)` as
+    `x+2x-3`, and `|4x-3| = -9` as `4x-3 = -9` — the last of which turns a
+    zero-solution absolute-value question into a linear one with an answer that
+    is not among the choices.
+
+    Innermost-first so nesting unwinds correctly.
+    """
+    if not html or "<mfenced" not in html:
+        return html
+
+    def once(text):
+        def sub(m):
+            attrs, inner = m.group(1), m.group(2)
+            o = _ATTR("open", attrs, None)
+            c = _ATTR("close", attrs, None)
+            sep = _ATTR("separators", attrs, None)
+            open_c = o.group(1) if o else "("
+            close_c = c.group(1) if c else ")"
+            seps = (sep.group(1) if sep else ",").replace(" ", "")
+
+            kids = _top_level_children(inner)
+            parts = []
+            if open_c:
+                parts.append(f'<mo fence="true" stretchy="true">{open_c}</mo>')
+            for i, kid in enumerate(kids):
+                if i:
+                    ch = seps[min(i - 1, len(seps) - 1)] if seps else ""
+                    if ch:
+                        parts.append(f'<mo separator="true">{ch}</mo>')
+                parts.append(kid)
+            if close_c:
+                parts.append(f'<mo fence="true" stretchy="true">{close_c}</mo>')
+            return "<mrow>" + "".join(parts) + "</mrow>"
+
+        return _MFENCED.sub(sub, text)
+
+    prev = None
+    guard = 0
+    while prev != html and "<mfenced" in html and guard < 12:
+        prev, html = html, once(html)
+        guard += 1
+    return html

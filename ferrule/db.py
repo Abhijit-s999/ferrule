@@ -281,9 +281,11 @@ def upsert_question_stub(conn, row, test, test_name):
 
 def store_question_content(conn, external_id, payload):
     """Fill in stem/options/answer/rationale for a question already stubbed."""
+    from . import mathtex
+
     raw_options = payload.get("answerOptions") or []
     options = [
-        {"letter": chr(65 + i), "content": opt.get("content", "")}
+        {"letter": chr(65 + i), "content": mathtex.fix_mathml(opt.get("content", ""))}
         for i, opt in enumerate(raw_options)
     ]
     answer = payload.get("correct_answer") or payload.get("keys") or []
@@ -298,11 +300,11 @@ def store_question_content(conn, external_id, payload):
         """,
         (
             payload.get("type"),
-            payload.get("stem") or "",
-            payload.get("stimulus") or "",
+            mathtex.fix_mathml(payload.get("stem") or ""),
+            mathtex.fix_mathml(payload.get("stimulus") or ""),
             json.dumps(options),
             json.dumps(answer),
-            payload.get("rationale") or "",
+            mathtex.fix_mathml(payload.get("rationale") or ""),
             now_ms(),
             external_id,
         ),

@@ -1,6 +1,6 @@
 {
   "name": "ferrule",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Free adaptive SAT practice with per-skill analytics and a local AI tutor",
   "license": "MIT",
   "main": "desktop/main.js",
