@@ -100,7 +100,79 @@ def connect(path=None):
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     _migrate(conn)
+    _data_migrations(conn)
     return conn
+
+
+# Bumped whenever stored question CONTENT needs rewriting, as opposed to the
+# schema. Kept separate from the schema migrations because these rewrite rows
+# rather than add columns, and must run exactly once.
+DATA_VERSION = 1
+
+
+def _data_migrations(conn):
+    """Repair stored content that a shipped bug left wrong.
+
+    Runs once per database, tracked by a version in `meta`, so an existing
+    install is fixed on first launch instead of asking the user to re-download
+    their question bank. Every step is idempotent, so a race between two
+    threads opening the database at once is harmless.
+    """
+    try:
+        current = int(get_meta(conn, "data_version") or 0)
+    except ValueError:
+        current = 0
+    if current >= DATA_VERSION:
+        return 0
+
+    from . import mathtex
+
+    fixed = 0
+    if current < 1:
+        # <mfenced> was removed from MathML Core, so Chromium drew none of the
+        # brackets College Board writes with it: f(x) read as "f x", and
+        # |4x-3| = -9 read as "4x-3 = -9", which changes the answer.
+        rows = conn.execute(
+            """SELECT external_id, stem, stimulus, options, rationale FROM questions
+               WHERE stem LIKE '%<mfenced%' OR stimulus LIKE '%<mfenced%'
+                  OR options LIKE '%<mfenced%' OR rationale LIKE '%<mfenced%'"""
+        ).fetchall()
+        for r in rows:
+            upd = {}
+            for col in ("stem", "stimulus", "rationale"):
+                v = r[col]
+                if v and "<mfenced" in v:
+                    nv = mathtex.fix_mathml(v)
+                    if nv != v:
+                        upd[col] = nv
+            # options holds JSON: parse, fix each choice, re-encode. Rewriting
+            # it as raw text sees escaped quotes and corrupts the record.
+            if r["options"] and "<mfenced" in r["options"]:
+                try:
+                    opts = json.loads(r["options"])
+                    touched = False
+                    for o in opts:
+                        if isinstance(o, dict) and isinstance(o.get("content"), str):
+                            nv = mathtex.fix_mathml(o["content"])
+                            if nv != o["content"]:
+                                o["content"], touched = nv, True
+                    if touched:
+                        upd["options"] = json.dumps(opts)
+                except ValueError:
+                    pass
+            if upd:
+                conn.execute(
+                    "UPDATE questions SET " + ", ".join(f"{k}=?" for k in upd)
+                    + " WHERE external_id=?",
+                    list(upd.values()) + [r["external_id"]],
+                )
+                fixed += 1
+        if fixed:
+            print(f"repaired maths markup in {fixed} questions", flush=True)
+
+    conn.commit()
+    set_meta(conn, "data_version", DATA_VERSION)
+    return fixed
 
 
 def _migrate(conn):
