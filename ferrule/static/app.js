@@ -23,6 +23,16 @@ const api = async (path, opts) => {
   if (data.error) throw new Error(data.error);
   return data;
 };
+/* Fetch status carries the download's own error as a FIELD, so it cannot go
+ * through api(): that helper throws on any payload with an `error` key, which
+ * turned a reportable download failure into "could not reach the backend" and
+ * hid the error screen -- including its retry -- behind a catch. */
+const fetchStatus = async () => {
+  const res = await fetch('/api/fetch/status');
+  if (!res.ok) throw new Error(`backend returned HTTP ${res.status}`);
+  return res.json();
+};
+
 const post = (path, body) =>
   api(path, {
     method: 'POST',
@@ -320,7 +330,7 @@ async function resumeProgress() {
   const box = $('#resume');
   if (!box) return;
   let st;
-  try { st = await api('/api/fetch/status'); } catch { return; }
+  try { st = await fetchStatus(); } catch { return; }
   if (st.phase === 'error') {
     box.innerHTML = `<div class="log">${esc(st.error)}</div>`;
     return;
@@ -348,7 +358,7 @@ let fetchStartedAt = 0;
 async function renderFirstRun() {
   let st;
   try {
-    st = await api('/api/fetch/status');
+    st = await fetchStatus();
   } catch (e) {
     // Losing the status endpoint must not leave a skeleton on screen forever.
     main.innerHTML = `<h1 class="serif">Welcome</h1>
@@ -384,10 +394,15 @@ async function renderFirstRun() {
         <div class="log">${esc(st.error)}</div>
         ${st.log_path ? `<p class="sub" style="margin:8px 0 0">Full details in
           <code>${esc(st.log_path)}</code></p>` : ''}
-        ${tlsish ? `<label class="srcrow" style="border:0;padding:10px 0 4px">
+        ${tlsish ? `
+        <p class="sub" style="margin:12px 0 4px"><strong>What to do:</strong> the quickest
+          fix is a different network — a phone hotspot works. This network is inspecting
+          encrypted traffic, which the download cannot verify. Nothing is wrong with
+          your Mac or the app.</p>
+        <label class="srcrow" style="border:0;padding:10px 0 4px">
           <input type="checkbox" id="insecure">
-          <span>Allow intercepted TLS — only on a network you trust, such as a school
-            or office one that inspects traffic</span>
+          <span>Or download anyway without verifying certificates — only do this on a
+            network you trust, like a school or office one</span>
         </label>` : ''}
         <button class="primary" id="dl" style="margin-top:12px">Try again</button>
       ` : `
