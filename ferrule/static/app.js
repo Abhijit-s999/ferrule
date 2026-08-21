@@ -378,9 +378,12 @@ async function renderFirstRun() {
         ${elapsed > 90 && !count ? `<p class="sub" style="margin:8px 0 0">
           Nothing stored yet after ${clock(elapsed)}. The tags are fetched first, so a slow
           connection can sit here a while — leave it running. If it never moves, quit and
-          reopen to retry.</p>` : ''}
+          reopen to retry.${st.log_path ? ` What it is actually doing is recorded in
+          <code>${esc(st.log_path)}</code> — send that file if you need help.` : ''}</p>` : ''}
       ` : st.phase === 'error' ? `
         <div class="log">${esc(st.error)}</div>
+        ${st.log_path ? `<p class="sub" style="margin:8px 0 0">Full details in
+          <code>${esc(st.log_path)}</code></p>` : ''}
         ${tlsish ? `<label class="srcrow" style="border:0;padding:10px 0 4px">
           <input type="checkbox" id="insecure">
           <span>Allow intercepted TLS — only on a network you trust, such as a school

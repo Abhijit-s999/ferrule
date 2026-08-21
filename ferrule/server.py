@@ -40,6 +40,33 @@ _db_path = None
 FETCH_STATE = {"phase": "idle", "detail": "", "error": "", "count": 0}
 _fetch_lock = threading.Lock()
 
+# Where the backend records what happened.
+#
+# The desktop shell captures the backend's output and shows it only if the
+# process exits non-zero, so a backend that runs but misbehaves -- a download
+# that stalls, a request that throws -- leaves the user with a spinner and no
+# way to find out why, and leaves us with nothing to debug from. Writing it to
+# a file next to the database means there is always something to send.
+LOG_PATH = os.path.join(os.path.dirname(db.DEFAULT_DB), "ferrule.log")
+_log_lock = threading.Lock()
+
+
+def log_line(text):
+    """Append a timestamped line to the log, never raising."""
+    try:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with _log_lock:
+            os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+            # Truncate if it has grown unreasonable; this is a debugging aid,
+            # not an audit trail.
+            if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 2_000_000:
+                os.replace(LOG_PATH, LOG_PATH + ".1")
+            with open(LOG_PATH, "a", encoding="utf-8") as fh:
+                for line in str(text).splitlines() or [""]:
+                    fh.write(f"{stamp}  {line}\n")
+    except Exception:
+        pass                      # logging must never break the thing it logs
+
 
 def _run_fetch(with_opensat, insecure=False):
     """Download the question bank in the background, reporting progress.
@@ -66,10 +93,19 @@ def _run_fetch(with_opensat, insecure=False):
             own = db.connect(_db_path)
         except Exception:
             pass                     # carry on with log lines only
+        ticks = 0
         while FETCH_STATE["phase"] == "running":
             text = buf.getvalue().strip().splitlines()
             if text:
                 FETCH_STATE["detail"] = text[-1].strip()
+            # A periodic heartbeat. If a user reports a hang, the log shows
+            # whether the download was moving and simply slow, or genuinely
+            # wedged -- which is otherwise impossible to tell apart after
+            # the fact.
+            ticks += 1
+            if ticks % 50 == 0:
+                log_line(f"fetch running: {FETCH_STATE['count']} stored -- "
+                         f"{FETCH_STATE['detail']!r}")
             if own is not None:
                 try:
                     FETCH_STATE["count"] = db.question_count(own)
@@ -96,7 +132,12 @@ def _run_fetch(with_opensat, insecure=False):
             phase="done", detail="Done.", count=db.question_count(conn)
         )
     except Exception as e:
+        import traceback
         FETCH_STATE.update(phase="error", error=str(e) or e.__class__.__name__)
+        log_line("fetch FAILED:\n" + traceback.format_exc() + "\n--- output ---\n"
+                 + buf.getvalue()[-4000:])
+    else:
+        log_line("fetch finished:\n" + buf.getvalue()[-4000:])
     finally:
         if conn is not None:
             conn.close()
@@ -262,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(runtime.RUNTIME.status())
 
             if route == "/api/fetch/status":
-                return self._send(FETCH_STATE)
+                return self._send({**FETCH_STATE, "log_path": LOG_PATH})
 
             if route == "/api/bank":
                 return self._send(self._bank(q))
@@ -301,6 +342,8 @@ class Handler(BaseHTTPRequestHandler):
 
             self.send_error(404)
         except Exception as e:
+            import traceback
+            log_line(f"GET {self.path} FAILED:\n" + traceback.format_exc())
             self._send({"error": str(e)}, 500)
 
     def do_POST(self):
@@ -422,6 +465,8 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError as e:
             self._send({"error": f"unknown question {e}"}, 404)
         except Exception as e:
+            import traceback
+            log_line(f"POST {self.path} FAILED:\n" + traceback.format_exc())
             self._send({"error": str(e)}, 500)
 
     def _bank(self, q):
@@ -660,6 +705,10 @@ def serve(host="127.0.0.1", port=8733, db_path=None):
     reaped = runtime.reap_stale_server()
     if reaped:
         print(f"stopped an orphaned model server from a previous run (pid {reaped})")
+
+    log_line(f"--- ferrule starting: python {sys.version.split()[0]}, "
+             f"{sys.platform}, frozen={bool(getattr(sys, '_MEIPASS', None))}, "
+             f"{count} questions, db={db_path or db.DEFAULT_DB}")
 
     httpd = ThreadingHTTPServer((host, port), Handler)
     shown = "localhost" if host == "127.0.0.1" else host
