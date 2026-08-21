@@ -141,6 +141,7 @@ def cmd_selftest(args):
     # check that only asserts the download eventually finishes, so it is
     # asserted directly here -- offline, against a stub fetch.
     try:
+        import shutil
         import tempfile
         import threading as _th
         import time as _time
@@ -148,7 +149,12 @@ def cmd_selftest(args):
         from ferrule import fetch as _fetch
         from ferrule import server as _srv
 
-        with tempfile.TemporaryDirectory() as tmp:
+        # Cleaned up by hand rather than with TemporaryDirectory. The reporter
+        # thread closes its connection up to a tick after the fetch ends, and
+        # Windows refuses to delete a file that is still open -- which failed
+        # the build on a check that had already passed.
+        tmp = tempfile.mkdtemp(prefix="ferrule-selftest-")
+        try:
             _srv._db_path = os.path.join(tmp, "probe.db")
             probe = db.connect(_srv._db_path)
             probe.execute(
@@ -189,6 +195,9 @@ def cmd_selftest(args):
                       "(reporter thread died -- the UI would look hung)")
             else:
                 print("  ok   fetch reports progress while running")
+        finally:
+            _time.sleep(1.0)                 # let the reporter close its handle
+            shutil.rmtree(tmp, ignore_errors=True)
     except Exception as e:
         problems.append(f"fetch progress: {e}")
         print(f"  FAIL fetch progress: {e}")
