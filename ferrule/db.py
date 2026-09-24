@@ -107,7 +107,7 @@ def connect(path=None):
 # Bumped whenever stored question CONTENT needs rewriting, as opposed to the
 # schema. Kept separate from the schema migrations because these rewrite rows
 # rather than add columns, and must run exactly once.
-DATA_VERSION = 1
+DATA_VERSION = 2
 
 
 def _data_migrations(conn):
@@ -169,6 +169,42 @@ def _data_migrations(conn):
                 fixed += 1
         if fixed:
             print(f"repaired maths markup in {fixed} questions", flush=True)
+
+    if current < 2:
+        # OpenSAT answer keys that contradict their own worked solution: the
+        # reader was marked right for the wrong choice, and the tutor, which
+        # is given the key, argued with the explanation under the question.
+        from . import answerkey
+
+        rekeyed = 0
+        rows = conn.execute(
+            """SELECT external_id, options, correct_answer, rationale
+               FROM questions WHERE source = 'opensat' AND qtype = 'mcq'"""
+        ).fetchall()
+        for r in rows:
+            try:
+                opts = json.loads(r["options"] or "[]")
+                key = json.loads(r["correct_answer"] or "[]")
+            except ValueError:
+                continue
+            new = answerkey.corrected_key(opts, key, r["rationale"])
+            if not new:
+                continue
+            conn.execute(
+                "UPDATE questions SET correct_answer = ? WHERE external_id = ?",
+                (json.dumps([new]), r["external_id"]),
+            )
+            # Past answers were graded against the bad key; regrade them so
+            # accuracy and weakness targeting reflect what was really right.
+            conn.execute(
+                """UPDATE attempts SET correct = (UPPER(TRIM(response)) = ?)
+                   WHERE external_id = ?""",
+                (new, r["external_id"]),
+            )
+            rekeyed += 1
+        if rekeyed:
+            print(f"corrected {rekeyed} OpenSAT answer keys", flush=True)
+        fixed += rekeyed
 
     conn.commit()
     set_meta(conn, "data_version", DATA_VERSION)
@@ -435,6 +471,13 @@ def store_opensat_question(conn, item, section):
     ).hexdigest()[:20]
     answer = inner.get("correct_answer")
     answer = [answer] if isinstance(answer, str) else list(answer or [])
+    rationale = mathtex.render(clean(inner.get("explanation")))
+    # A few percent of OpenSAT keys name the wrong letter; trust the worked
+    # solution over the key when it unambiguously lands on another choice.
+    from . import answerkey
+    fixed_key = answerkey.corrected_key(options, answer, rationale)
+    if fixed_key:
+        answer = [fixed_key]
 
     test = 2 if section == "math" else 1
     test_name = "Math" if test == 2 else "Reading and Writing"
@@ -464,7 +507,7 @@ def store_opensat_question(conn, item, section):
             mathtex.render(clean(inner.get("paragraph"))),
             json.dumps(options),
             json.dumps(answer),
-            mathtex.render(clean(inner.get("explanation"))),
+            rationale,
             now_ms(),
         ),
     )
