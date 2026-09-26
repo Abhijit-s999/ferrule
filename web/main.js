@@ -61,6 +61,7 @@ try {
     const store = await new Store(SQL, await openKV()).open();
     install(createApi(store), window);
     await loadScript('charts.js');
+    await loadScript('syllabus.js');
     await loadScript('app.js');
   }
 } catch (e) {

@@ -168,7 +168,18 @@ header {
   font-size: 12px; font-weight: 400; margin-left: 9px; letter-spacing: 0;
 }
 
-nav { display: flex; gap: 2px; margin-left: auto; align-items: center; }
+nav {
+  display: flex; gap: 2px; margin-left: auto; align-items: center;
+  /* Scroll sideways rather than wrap when the tabs outgrow the header. */
+  min-width: 0; overflow-x: auto; scrollbar-width: none;
+}
+nav::-webkit-scrollbar { display: none; }
+.brand, nav button, #tutorchip { white-space: nowrap; flex: none; }
+@media (max-width: 1100px) {
+  nav button { padding: 7px 9px; }
+  nav button::after { left: 9px; right: 9px; }
+  .brand em { display: none; }
+}
 
 nav button {
   position: relative;
@@ -970,6 +981,10 @@ figure figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
   .card { padding: 15px 16px; }
   header { gap: 10px; padding: 0 13px; }
   nav button { padding: 7px 9px; font-size: 12.5px; }
+  /* The tabs scroll here; fade the edge so it is visible that more exist. */
+  nav { mask-image: linear-gradient(to right, #000 82%, transparent); padding-right: 24px; }
+  /* A phone cannot run the desktop app, so the link is noise on one. */
+  a.chip { display: none; }
   .model-body { grid-template-columns: 1fr; gap: 8px; }
   .heat-head, .heat-row { grid-template-columns: minmax(122px, 1fr) repeat(4, 44px); }
   .pace-row { grid-template-columns: 84px 1fr 38px 44px; }
@@ -1112,4 +1127,107 @@ header, nav, .flowfoot, .cellchip, .kbd, .tag { user-select: none; }
 @keyframes nudge {
   20% { transform: translateX(-4px); } 45% { transform: translateX(3px); }
   70% { transform: translateX(-2px); } 100% { transform: none; }
+}
+
+/* ---------------------------------------------------------------- learn */
+
+.learnhead { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+.learnhead h1 { margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--rule-2); border-radius: var(--r-md, 8px); overflow: hidden; }
+.seg button {
+  font: 500 13px var(--sans); padding: 7px 14px; border: 0; background: transparent;
+  color: var(--ink-2); cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--rule-2); }
+.seg button.on { background: var(--ink); color: var(--paper); }
+
+.learn { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 34px; align-items: start; }
+.learnnav { position: sticky; top: 76px; max-height: calc(100vh - 96px); overflow-y: auto; padding-right: 4px; }
+.lnav-domain {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em; font-weight: 600;
+  color: var(--ink-3); margin: 18px 0 5px 10px;
+}
+.lnav-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  width: 100%; text-align: left; font: 13.5px/1.35 var(--sans); color: var(--ink-2);
+  background: transparent; border: 0; border-radius: 6px; padding: 7px 10px; cursor: pointer;
+}
+.lnav-item:hover { background: var(--surface-2); color: var(--ink); }
+.lnav-item.on { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+.lnav-item em { font: 600 11px var(--mono); font-style: normal; flex: none; }
+.card .lnav-item { padding: 9px 8px; border-top: 1px solid var(--rule); border-radius: 0; }
+.card .lnav-item:first-of-type { border-top: 0; }
+
+.lesson { min-width: 0; }
+.lesson > h2 { font-size: 26px; margin-top: 2px; }
+.lesson p, .lesson li { line-height: 1.65; }
+.crumb { font-size: 12px; color: var(--ink-3); letter-spacing: .02em; }
+.prose p { margin: 0 0 12px; }
+.prose ul, .tl { margin: 0 0 12px; padding-left: 20px; }
+.tl li { margin-bottom: 8px; color: var(--ink-2); }
+.record { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; font-size: 14px; }
+
+.tipgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.tipgrid .card { margin: 0; }
+.tip p { margin: 6px 0 0; font-size: 13.5px; color: var(--ink-2); }
+.domainhead { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.domaincard .sub { margin-bottom: 8px; }
+
+.example .exq { display: flex; gap: 12px; }
+.example .exq > div { min-width: 0; flex: 1; }
+.exn {
+  flex: none; width: 22px; height: 22px; border-radius: 50%; margin-top: 2px;
+  display: grid; place-items: center; font: 600 11px var(--mono);
+  background: var(--surface-2); border: 1px solid var(--rule-2); color: var(--ink-2);
+}
+.example .reveal { margin: 14px 0 0 34px; }
+.exsol { display: none; margin: 14px 0 0 34px; padding-top: 12px; border-top: 1px dashed var(--rule-2); }
+.example.shown .exsol { display: block; }
+.exans { font-weight: 600; margin-top: 6px; }
+.exans .k {
+  font: 600 10.5px var(--sans); text-transform: uppercase; letter-spacing: .09em;
+  color: var(--ink-3); margin-right: 8px;
+}
+
+/* Reading and Writing examples: passage, then choices whose reasons stay
+ * hidden until the solution is shown. */
+.lesson blockquote {
+  margin: 0 0 12px; padding: 10px 14px; border-left: 3px solid var(--rule-2);
+  background: var(--surface-2); border-radius: 0 6px 6px 0; font-family: var(--serif); font-size: 15px;
+}
+.opts { list-style: none; padding: 0; margin: 10px 0 0; }
+.opts li { padding: 6px 0; border-top: 1px solid var(--rule); }
+.opts li strong { display: inline-block; width: 22px; font-family: var(--mono); font-size: 12.5px; }
+.opts .why { display: none; }
+.example.shown .opts .why { display: block; margin-left: 22px; font-size: 13px; color: var(--ink-3); }
+.example.shown .opts li.right { color: var(--good); }
+.example.shown .opts li.right .why { color: var(--good); }
+
+table.mini { border-collapse: collapse; margin: 10px 0; font-size: 13.5px; }
+table.mini th, table.mini td { border: 1px solid var(--rule-2); padding: 5px 10px; text-align: center; }
+table.mini th { background: var(--surface-2); font-weight: 600; }
+table.mini td:first-child { text-align: left; }
+
+/* Hand-set maths: a serif for expressions, and stacked fractions. */
+.m { font-family: var(--serif); white-space: nowrap; }
+.frac {
+  display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center;
+  font-family: var(--serif); font-size: .92em; line-height: 1.15; margin: 0 2px;
+}
+.frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 3px; }
+.frac > span:last-child { padding: 0 3px; }
+.rad { border-top: 1px solid currentColor; padding: 0 2px; font-family: var(--serif); }
+
+.twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.lessonnav { margin-top: 30px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.lessonnav button { max-width: 48%; white-space: normal; text-align: left; }
+
+.backtopics { display: none; }
+@media (max-width: 800px) {
+  .learn { grid-template-columns: 1fr; gap: 18px; }
+  .learn.has-lesson .learnnav { display: none; }
+  .backtopics { display: inline-flex; margin-bottom: 12px; }
+  .learnnav { position: static; max-height: none; border-bottom: 1px solid var(--rule); padding-bottom: 12px; }
+  .twocol { grid-template-columns: 1fr; gap: 0; }
+  .example .reveal, .exsol { margin-left: 0; }
 }

@@ -148,7 +148,7 @@ function show(view) {
   const render = () => {
     state.view = view;
     $$('nav button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
-    main.className = ['analytics', 'bank'].includes(view) ? 'wide' : '';
+    main.className = ['analytics', 'bank', 'learn'].includes(view) ? 'wide' : '';
     if (view !== 'practice') stopClock();
     try {
       const r = VIEWS[view]();
@@ -469,6 +469,7 @@ async function startSet({ test, n, skill } = {}) {
   state.queue = questions;
   state.idx = 0;
   state.session = sess.session_id;
+  state.results = {};
 
   const budget = questions.reduce((t, q) => t + (PACE[q.test] || 80), 0);
   startClock(budget, skill ? `Drill · ${skill}` : 'Timed set');
@@ -584,6 +585,8 @@ async function submit(response) {
     external_id: q.external_id, response, elapsed_ms: elapsed, session_id: state.session,
   });
   state.answered = res;
+  // Keyed by question, so answering again after a misclick replaces the miss.
+  (state.results ||= {})[q.external_id] = res.correct;
 
   const keys = res.correct_answer.map(String);
   $$('.choice').forEach((b) => {
@@ -621,6 +624,10 @@ function next() { state.idx++; VIEWS.practice(); }
 async function renderSetDone() {
   stopClock();
   const ov = await api('/api/state');
+  const results = state.results || {};
+  const missed = [...new Set(state.queue
+    .filter((q) => results[q.external_id] === false && lessonFor(q.skill))
+    .map((q) => q.skill))];
   main.innerHTML = `
     <div class="card" style="text-align:center;padding:40px 24px">
       <h1 class="serif">Set complete</h1>
@@ -629,9 +636,15 @@ async function renderSetDone() {
         <button class="primary" id="again">Another set</button>
         <button class="ghost" id="tostats">See what to fix</button>
       </div>
-    </div>`;
+    </div>
+    ${missed.length ? `<h3>Review what you missed</h3>
+      <div class="card">${missed.map((sk) => `
+        <button class="lnav-item" data-lesson="${esc(sk)}">
+          <span>${esc(sk)}</span><span class="muted">Learn ${I.chev}</span></button>`).join('')}
+      </div>` : ''}`;
   $('#again').onclick = () => startSet({ n: 10 });
   $('#tostats').onclick = () => show('analytics');
+  $$('[data-lesson]').forEach((b) => (b.onclick = () => openLesson(b.dataset.lesson)));
 }
 
 // ---------------------------------------------------------------- tutor
@@ -1687,6 +1700,152 @@ async function startWeakness() {
   state.session = sess.session_id;
   flowNext();
 }
+
+// ---------------------------------------------------------------- learn
+
+/* The syllabus, taught (content in syllabus.js). One page per skill, in the
+ * question bank's own taxonomy, so each lesson can show your record on that
+ * skill and drill it directly.
+ *
+ * Worked examples start with the solution hidden: a solution you can see
+ * before trying is a reading exercise, not practice. */
+state.learn = { test: 2, skill: null };
+
+const lessonFor = (skill) => {
+  for (const sec of SYLLABUS.sections) {
+    for (const d of sec.domains) {
+      const s = d.skills.find((x) => x.skill === skill);
+      if (s) return { sec, domain: d, lesson: s };
+    }
+  }
+  return null;
+};
+
+function openLesson(skill) {
+  const hit = lessonFor(skill);
+  if (!hit) return;
+  state.learn = { test: hit.sec.test, skill };
+  show('learn');
+}
+
+const para = (html) => (/^\s*<(ul|ol|table)/.test(html) ? html : `<p>${html}</p>`);
+
+function sectionPage(sec) {
+  return `
+    <h2 class="serif">How the ${esc(sec.name)} section works</h2>
+    <p>${sec.intro}</p>
+    <ul class="tl">${sec.format.map((f) => `<li>${f}</li>`).join('')}</ul>
+    <h3>Habits that pay on every question</h3>
+    <div class="tipgrid">${sec.tips.map(([t, b]) =>
+      `<div class="card tip"><strong>${esc(t)}</strong><p>${b}</p></div>`).join('')}</div>
+    <h3>What is tested</h3>
+    ${sec.domains.map((d) => `
+      <div class="card domaincard">
+        <div class="domainhead"><strong>${esc(d.name)}</strong>
+          <span class="muted">about ${Math.round(d.share * 100)}% of the section</span></div>
+        <p class="sub">${d.blurb}</p>
+        ${d.skills.map((s) => `<button class="lnav-item" data-skill="${esc(s.skill)}">
+          <span>${esc(s.skill)}</span><span class="muted">${I.chev}</span></button>`).join('')}
+      </div>`).join('')}`;
+}
+
+function skillPage(sec, domain, s, rec, flat) {
+  const i = flat.findIndex((x) => x.skill === s.skill);
+  const prev = flat[i - 1], next = flat[i + 1];
+  const record = rec && rec.attempts
+    ? `You have answered <strong>${rec.attempts}</strong> of these: ${rec.correct} correct,
+       <strong style="color:${accColor(rec.accuracy)}">${pct(rec.accuracy)}</strong>.`
+    : 'You have not practised this skill yet.';
+  return `
+    <button class="ghost backtopics" data-skill="">← All topics</button>
+    <div class="crumb">${esc(sec.name)} · ${esc(domain.name)}</div>
+    <h2 class="serif">${esc(s.skill)}</h2>
+    <p class="sub">${esc(s.gist)}</p>
+    <div class="card record">
+      <span>${record}</span>
+      <button class="primary" id="drill">Practise this skill</button>
+    </div>
+
+    <h3>The idea</h3>
+    <div class="prose">${s.idea.map(para).join('')}</div>
+
+    <h3>Worked examples</h3>
+    ${s.examples.map((ex, n) => `
+      <div class="card example" data-ex="${n}">
+        <div class="exq"><span class="exn">${n + 1}</span><div>${ex.q}</div></div>
+        <button class="ghost reveal">Show the solution</button>
+        <div class="exsol">
+          <ol class="steps">${ex.steps.map((st) => `<li>${st}</li>`).join('')}</ol>
+          <div class="exans"><span class="k">Answer</span> ${ex.answer}</div>
+        </div>
+      </div>`).join('')}
+
+    <div class="twocol">
+      <div><h3>Traps</h3><ul class="tl">${s.traps.map((t) => `<li>${t}</li>`).join('')}</ul></div>
+      <div><h3>Tips and tricks</h3><ul class="tl">${s.tips.map((t) => `<li>${t}</li>`).join('')}</ul></div>
+    </div>
+
+    <div class="row lessonnav">
+      ${prev ? `<button class="ghost" data-skill="${esc(prev.skill)}">← ${esc(prev.skill)}</button>` : ''}
+      <div class="spacer"></div>
+      ${next ? `<button class="ghost" data-skill="${esc(next.skill)}">${esc(next.skill)} →</button>` : ''}
+    </div>`;
+}
+
+VIEWS.learn = async function renderLearn() {
+  const L = state.learn;
+  const sec = SYLLABUS.sections.find((x) => x.test === L.test) || SYLLABUS.sections[0];
+  const flat = sec.domains.flatMap((d) => d.skills);
+  const hit = L.skill ? lessonFor(L.skill) : null;
+
+  // Your record per skill. The lessons are useful without it, so a failure
+  // here only drops the numbers.
+  const rec = {};
+  try {
+    const st = await api('/api/stats');
+    for (const d of st.by_type) for (const s of d.skills) rec[s.skill] = s;
+  } catch { /* lessons still render */ }
+  if (state.view !== 'learn') return;
+
+  main.innerHTML = `
+    <div class="learnhead">
+      <h1 class="serif">Learn</h1>
+      <div class="seg">${SYLLABUS.sections.map((x) => `<button data-sec="${x.test}"
+        class="${x.test === sec.test ? 'on' : ''}">${esc(x.name)}</button>`).join('')}</div>
+    </div>
+    <div class="learn ${hit ? 'has-lesson' : ''}">
+      <aside class="learnnav">
+        <button class="lnav-item ${hit ? '' : 'on'}" data-skill="">How the section works</button>
+        ${sec.domains.map((d) => `
+          <div class="lnav-domain">${esc(d.name)}</div>
+          ${d.skills.map((s) => {
+            const r = rec[s.skill];
+            return `<button class="lnav-item ${hit && hit.lesson.skill === s.skill ? 'on' : ''}"
+              data-skill="${esc(s.skill)}"><span>${esc(s.skill)}</span>${r && r.attempts
+                ? `<em style="color:${accColor(r.accuracy)}">${pct(r.accuracy)}</em>` : ''}</button>`;
+          }).join('')}`).join('')}
+      </aside>
+      <article class="lesson">${hit
+        ? skillPage(hit.sec, hit.domain, hit.lesson, rec[hit.lesson.skill], flat)
+        : sectionPage(sec)}</article>
+    </div>`;
+
+  $$('[data-sec]').forEach((b) => (b.onclick = () => {
+    state.learn = { test: Number(b.dataset.sec), skill: null };
+    VIEWS.learn();
+  }));
+  $$('[data-skill]').forEach((b) => (b.onclick = () => {
+    state.learn = { test: sec.test, skill: b.dataset.skill || null };
+    VIEWS.learn();
+    window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+  }));
+  $$('.example .reveal').forEach((b) => (b.onclick = () => {
+    b.closest('.example').classList.add('shown');
+    b.remove();
+  }));
+  const drill = $('#drill');
+  if (drill) drill.onclick = () => withTutorChoice(() => startSet({ skill: hit.lesson.skill, n: 10 }));
+};
 
 // ---------------------------------------------------------------- analytics
 

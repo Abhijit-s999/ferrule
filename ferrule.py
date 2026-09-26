@@ -116,7 +116,7 @@ def cmd_selftest(args):
     from ferrule import server
 
     problems = []
-    required = ["index.html", "app.js", "charts.js", "style.css"]
+    required = ["index.html", "app.js", "charts.js", "syllabus.js", "style.css"]
     print(f"static dir: {server.STATIC_DIR}")
     for name in required:
         path = os.path.join(server.STATIC_DIR, name)
