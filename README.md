@@ -11,6 +11,19 @@ you explicitly choose a hosted AI provider.
 
 ---
 
+## Use it in your browser
+
+**<https://abhijit-s999.github.io/ferrule/>** — nothing to install, works on
+Chromebooks, and the same practice, question bank and analytics as the app.
+
+- Your browser downloads the questions itself, straight from College Board,
+  the first time (about four minutes). The site never holds a question.
+- Progress is saved in that browser automatically. **Clearing the browser's
+  site data or cache deletes it**, so Settings has a backup file you can
+  restore in any browser.
+- The AI tutor is desktop only: it runs a model on your own computer, which a
+  web page cannot do.
+
 ## Install
 
 Grab the installer for your platform from
@@ -245,7 +258,16 @@ ferrule/
   tutor.py            provider abstraction, prompting, streaming
   server.py           stdlib HTTP server and JSON API
   static/             frontend: vanilla JS, inline-SVG charts, no build step
+web/                  the browser version: the same frontend, with the backend
+  lib/                ported to JS over SQLite-in-WebAssembly (sql.js), saved
+                      to IndexedDB; answers the same /api/* routes in the page
 ```
+
+The web port is checked against the Python backend on a real practice history:
+every analytics and question-bank route returns identical JSON, and all 2,336
+OpenSAT questions import byte-for-byte the same. `npm run test:web` runs the
+offline self-test the Pages deploy gates on; `npm run build:web` assembles
+`site/`.
 
 Two data-quality fixes worth knowing about, because both would silently corrupt
 the metrics:

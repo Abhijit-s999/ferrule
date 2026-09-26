@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ferrule — free SAT practice</title>
+  <meta name="description" content="Free, adaptive SAT practice on College Board's official question bank, with analytics by skill and difficulty. No account, no tracking, runs in your browser.">
+  <meta property="og:title" content="ferrule — free SAT practice">
+  <meta property="og:description" content="Adaptive SAT practice on the official question bank. No account, no tracking, free.">
+  <meta property="og:type" content="website">
+  <meta name="theme-color" content="#17161a">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-256.png">
+</head>
+<body>
+  <header>
+    <div class="brand">ferrule<em id="bankinfo"></em></div>
+    <nav>
+      <button data-view="home" class="on">Home</button>
+      <button data-view="practice">Practice</button>
+      <button data-view="weakness">Weakness target</button>
+      <button data-view="bank">Question bank</button>
+      <button data-view="analytics">Analytics</button>
+      <button data-view="settings">Settings</button>
+    </nav>
+    <div id="tutorchip"></div>
+  </header>
+
+  <div id="examhead"></div>
+  <main id="main">
+    <p class="sub" style="margin-top:40px">Loading…</p>
+    <noscript><div class="card">ferrule needs JavaScript to run.</div></noscript>
+  </main>
+
+  <!-- SQLite compiled to WebAssembly; main.js starts it, then loads the app. -->
+  <script src="vendor/sql-wasm.js"></script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

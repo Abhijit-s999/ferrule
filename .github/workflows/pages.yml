@@ -1,0 +1,70 @@
+name: Web
+
+# Publishes the web version (web/ + ferrule/static) to GitHub Pages whenever
+# something it is built from changes on main. The site serves only the app:
+# every visitor's browser downloads the questions itself, from the source.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "ferrule/static/**"
+      - "scripts/build-web.sh"
+      - "scripts/web-selftest.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # --ignore-scripts: the web build needs only sql.js, and skipping
+      # install scripts avoids downloading Electron's ~100 MB binary.
+      - name: Install
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm ci --ignore-scripts && exit 0
+            echo "npm ci failed (attempt $i of 3); retrying"; sleep 10
+          done
+          exit 1
+
+      - name: Self-test the in-page backend
+        run: node scripts/web-selftest.mjs
+
+      - name: Build
+        run: ./scripts/build-web.sh
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

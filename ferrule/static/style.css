@@ -697,6 +697,8 @@ td.num, .num {
   padding: 4px 10px 4px 9px; background: var(--surface);
   transition: border-color var(--t-fast) var(--ease);
 }
+a.chip { text-decoration: none; }
+a.chip:hover { color: var(--ink); border-color: var(--ink-3); }
 .chip .dot {
   width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3);
   transition: background var(--t) var(--ease);
@@ -1066,6 +1068,13 @@ figure figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
   transition: opacity var(--t) var(--ease), transform var(--t) var(--ease);
 }
 .toast.on { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+.toast.bad { background: var(--bad); color: #fff; }
+
+/* Numbered setup steps (the web build's tutor instructions). */
+.steps { margin: 0; padding-left: 20px; font-size: 13.5px; line-height: 1.55; color: var(--ink-2); }
+.steps li { padding: 5px 0 5px 4px; }
+.steps li::marker { color: var(--ink-3, var(--ink-2)); font: 600 12px var(--mono); }
+.steps strong { color: var(--ink); }
 
 button.is-busy { cursor: progress; }
 button.is-busy .spin { margin-right: 7px; }

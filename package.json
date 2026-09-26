@@ -11,11 +11,14 @@
     "build:win": "electron-builder --win nsis --publish never",
     "build:mac": "electron-builder --mac dmg --publish never",
     "backend": "./scripts/build-backend.sh",
-    "dist": "./scripts/build-backend.sh && electron-builder --publish never"
+    "dist": "./scripts/build-backend.sh && electron-builder --publish never",
+    "build:web": "./scripts/build-web.sh",
+    "test:web": "node scripts/web-selftest.mjs"
   },
   "devDependencies": {
     "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "sql.js": "^1.14.2"
   },
   "build": {
     "appId": "app.ferrule.desktop",

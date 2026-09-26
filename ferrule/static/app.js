@@ -17,6 +17,13 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const main = $('#main');
 
+/* The same frontend runs as the desktop app and as the web version (web/).
+ * On the web the backend lives inside the page, there is no AI tutor -- a
+ * model cannot run in a browser tab -- and progress lives in the browser's
+ * storage, so the few places that differ check this. */
+const WEB = !!window.FERRULE_WEB;
+const RELEASES_URL = 'https://github.com/Abhijit-s999/ferrule/releases/latest';
+
 const api = async (path, opts) => {
   const res = await fetch(path, opts);
   const data = await res.json();
@@ -168,6 +175,12 @@ const prefersReducedMotion = () =>
 
 /* One place reports model state, and it is also the eject control. */
 async function refreshChip() {
+  if (WEB) {
+    $('#tutorchip').innerHTML = `<a class="chip" href="${RELEASES_URL}" target="_blank"
+      rel="noopener" title="The desktop app adds an AI tutor that runs on your own computer">
+      Desktop app</a>`;
+    return;
+  }
   let rt;
   try { rt = await api('/api/runtime/status'); } catch { return; }
   const el = $('#tutorchip');
@@ -244,8 +257,9 @@ function stopClock() {
 
 VIEWS.home = async function renderHome() {
   main.innerHTML = skeleton(4);
-  const [ov, plan, vt] = await Promise.all([
+  const [ov, plan, vt, st] = await Promise.all([
     api('/api/state'), api('/api/plan?minutes=30'), api('/api/vintages'),
+    WEB ? api('/api/storage') : null,
   ]);
   $('#bankinfo').textContent = `${ov.bank_size.toLocaleString()} questions`;
   refreshChip();
@@ -256,6 +270,7 @@ VIEWS.home = async function renderHome() {
   main.innerHTML = `
     <h1 class="serif">Where are you losing points?</h1>
     <p class="sub">Practice picked by weakness, exam weighting, and what you have already missed.</p>
+    ${WEB ? backupNudge(st) : ''}
     ${ov.bank_pending ? `<div class="card" id="resume" style="margin:0 0 18px">
       <strong>${ov.bank_pending.toLocaleString()} questions were never downloaded.</strong>
       <p class="sub" style="margin:6px 0 12px">A download was interrupted, so part of the bank
@@ -307,6 +322,7 @@ VIEWS.home = async function renderHome() {
     </div>`;
 
   wireVintage(VIEWS.home);
+  if (WEB) wireBackup(VIEWS.home);
 
   const rdl = $('#resumedl');
   if (rdl) rdl.onclick = () => busy(rdl, 'Starting…', async () => {
@@ -412,7 +428,12 @@ async function renderFirstRun() {
         </label>
         <button class="primary" id="dl">Download questions</button>
       `}
-      <p class="sub" style="margin:16px 0 0">Questions stay on your machine. See ATTRIBUTION.md for sources.</p>
+      <p class="sub" style="margin:16px 0 0">${WEB
+        ? `Questions download straight from College Board into this browser, about 25&nbsp;MB.
+           This site never stores or serves them. See
+           <a href="https://github.com/Abhijit-s999/ferrule/blob/main/ATTRIBUTION.md"
+              target="_blank" rel="noopener">ATTRIBUTION.md</a> for sources.`
+        : 'Questions stay on your machine. See ATTRIBUTION.md for sources.'}</p>
     </div>`;
 
   const btn = $('#dl');
@@ -581,14 +602,14 @@ async function submit(response) {
     </div>
     <div class="row" style="margin-top:15px">
       <button class="primary" id="next">${state.idx + 1 >= state.queue.length ? 'Finish' : 'Next question'}</button>
-      <button class="ghost" id="ask">${I.spark} Ask the tutor</button>
+      ${WEB ? '' : `<button class="ghost" id="ask">${I.spark} Ask the tutor</button>`}
       ${!res.correct ? `<button class="quiet" id="misclick" title="Delete this attempt and answer again">
         Misclick — answer again</button>` : ''}
       ${!res.correct ? '<span class="muted" style="font-size:12.5px">Queued for review</span>' : ''}
     </div>
     <div id="tutor-out"></div>`;
   $('#next').onclick = next;
-  $('#ask').onclick = () => askTutor(q, response, res.correct);
+  if (!WEB) $('#ask').onclick = () => askTutor(q, response, res.correct);
   const mc = $('#misclick');
   if (mc) mc.onclick = () => misclick(VIEWS.practice);
   const hint = $('#chathint'); if (hint) hint.textContent = '';
@@ -1071,7 +1092,7 @@ function wireHighlighting() {
 let tutorAsked = false;
 
 async function withTutorChoice(startFn) {
-  if (tutorAsked) return startFn();
+  if (tutorAsked || WEB) return startFn();
   const rt = await api('/api/runtime/status');
   if (rt.selected || rt.running) { tutorAsked = true; return startFn(); }
 
@@ -1139,6 +1160,23 @@ async function withTutorChoice(startFn) {
 const chat = { history: [], open: false, busy: false };
 
 function chatPanel() {
+  // On the web the tutor is a pointer to the desktop app, not a dead control.
+  // It opens in place: leaving the question would throw away a timed set.
+  if (WEB) return `
+    <div class="chat" id="chat">
+      <button class="chat-toggle" id="chattoggle">
+        ${I.spark}<span>Ask the tutor</span>
+        <span class="muted">desktop app only</span>
+      </button>
+      <div class="chat-body"><div>
+        <p class="sub" style="margin:4px 0 0">
+          The AI tutor runs a language model on your own computer, which a web page
+          cannot do. It is free in the <a href="${RELEASES_URL}" target="_blank"
+          rel="noopener">desktop app</a>: install it, then choose a model under
+          Settings → AI tutor. The full steps are in Settings here.
+        </p>
+      </div></div>
+    </div>`;
   return `
     <div class="chat ${chat.open ? 'open' : ''}" id="chat">
       <button class="chat-toggle" id="chattoggle">
@@ -1165,6 +1203,10 @@ const msgHTML = (m) =>
 function wireChat(getQuestion, isAnswered) {
   const toggle = $('#chattoggle');
   if (!toggle) return;
+  if (WEB) {
+    toggle.onclick = () => $('#chat').classList.toggle('open');
+    return;
+  }
   const hint = $('#chathint');
   if (hint) hint.textContent = isAnswered() ? '' : 'hints only until you answer';
 
@@ -1768,12 +1810,187 @@ function wireVintage(after) {
   };
 }
 
+// ---------------------------------------------------------------- web: saving
+
+/* On the web, progress lives in this browser's storage, not in a file. It
+ * survives closing the tab and restarting, but not clearing site data, a
+ * private window, or a different browser -- and none of that is obvious. So
+ * the page says it plainly, offers a backup file, and nudges once enough
+ * answers exist only here to be worth losing. */
+const BACKUP_NUDGE_AFTER = 25;
+
+const ago = (ms) => {
+  const m = Math.floor((Date.now() - ms) / 60000);
+  if (m < 2) return 'just now';
+  if (m < 60) return `${m} minutes ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? '' : 's'} ago`;
+};
+
+function backupNudge(st) {
+  if (window.FERRULE_EPHEMERAL) return `<div class="card" style="margin:0 0 18px;border-color:var(--bad)">
+      <strong>This browser is not letting ferrule save anything.</strong>
+      <p class="sub" style="margin:6px 0 12px">This is usually a private or incognito window.
+        Everything here disappears when it closes, including the question bank. Download a
+        backup before you leave, or use a normal window.</p>
+      <button class="primary" data-backup>Download a backup</button>
+    </div>`;
+  if (!st || st.since_backup < BACKUP_NUDGE_AFTER) return '';
+  return `<div class="card" style="margin:0 0 18px">
+      <strong>${st.since_backup.toLocaleString()} answers are saved only in this browser.</strong>
+      <p class="sub" style="margin:6px 0 12px">Clearing your browser's cache or site data would
+        erase them. A backup file keeps them safe and restores on any device.</p>
+      <div class="row">
+        <button class="primary" data-backup>Download a backup</button>
+        <button class="quiet" data-goto="settings">How saving works</button>
+      </div>
+    </div>`;
+}
+
+function webSettings(st) {
+  const last = st.last_backup
+    ? `Last backup ${ago(st.last_backup)}` : 'No backup yet';
+  const since = st.last_backup
+    ? ` · ${st.since_backup.toLocaleString()} answer${st.since_backup === 1 ? '' : 's'} since` : '';
+  const kept = window.FERRULE_EPHEMERAL
+    ? '<strong style="color:var(--bad)">Not saving: this looks like a private window</strong>'
+    : st.persisted
+      ? 'Storage protected from automatic clean-up'
+      : 'The browser may clear storage if the disk gets full <button class="quiet" id="persist">Protect it</button>';
+  return `
+    <h3>Your progress</h3>
+    <div class="card">
+      <p class="sub" style="margin:0 0 10px">
+        Everything you answer is saved automatically in this browser, on this device: your
+        answers, reviews, settings and the question bank. It stays when you close the tab or
+        restart your computer. There is no account, and nothing is sent anywhere.
+      </p>
+      <p class="sub" style="margin:0 0 10px;color:var(--ink)">
+        <strong>Clearing this browser's cache or site data deletes all of it.</strong>
+        So does closing a private or incognito window, and it does not follow you to another
+        browser or device.
+      </p>
+      <p class="sub" style="margin:0 0 14px">
+        A backup file is the fix. Download one now and then, and restore it here or in any
+        other browser. The question bank is not in the backup; it downloads again in a few
+        minutes.
+      </p>
+      <div class="row">
+        <button class="primary" data-backup>Download a backup</button>
+        <button class="ghost" id="restore">Restore from a backup</button>
+        <input type="file" id="restorefile" accept=".json,application/json" hidden>
+      </div>
+      <p class="sub" style="margin:14px 0 0;font-size:12.5px">
+        ${last}${since} · ${st.attempts.toLocaleString()} answers in total · ${kept}
+      </p>
+    </div>
+
+    <h3 id="tutor-desktop">AI tutor — in the desktop app</h3>
+    <div class="card">
+      <p class="sub" style="margin:0 0 10px">
+        The tutor explains questions and answers follow-ups using a language model that runs
+        on your own computer, so nothing you ask leaves it. A web page cannot run a model like
+        that, so the tutor comes with the free desktop app. Everything else is the same.
+      </p>
+      <ol class="steps">
+        <li><strong>Download ferrule</strong> from the releases page: the <code>.exe</code> for
+          Windows, the <code>.dmg</code> for a Mac, or the <code>.AppImage</code> or
+          <code>.deb</code> for Linux.</li>
+        <li><strong>Install and open it.</strong> It is not signed with a paid certificate, so
+          Windows may say it protected your PC (choose <em>More info → Run anyway</em>), and a
+          Mac needs one extra step the first time — the
+          <a href="https://github.com/Abhijit-s999/ferrule#macos-the-first-launch-needs-one-extra-step"
+             target="_blank" rel="noopener">README explains it</a>.</li>
+        <li><strong>Download the question bank</strong> when it asks, the same one-time download
+          as here.</li>
+        <li><strong>Settings → AI tutor → pick a model.</strong> It shows which models fit your
+          computer and marks one as recommended. Choose <em>Download &amp; use</em> and it fetches
+          the model itself, 1–6&nbsp;GB, once. No terminal, no account.</li>
+        <li><strong>Ask away.</strong> <em>Ask the tutor</em> sits under every question. Before you
+          answer it only gives hints; afterwards it explains fully. The model loads when you
+          first ask and unloads itself after ten idle minutes.</li>
+      </ol>
+      <p class="sub" style="margin:10px 0 14px">
+        A graphics card makes it quick; smaller models also run on an ordinary laptop, just
+        more slowly. Already use Ollama, LM Studio or an AI API? The desktop app can use that
+        instead of downloading a model. Progress from this page does not carry over to the
+        desktop app.
+      </p>
+      <button class="primary" data-releases>Get the desktop app</button>
+    </div>
+  `;
+}
+
+async function backupProgress() {
+  const data = await api('/api/progress/export');
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ferrule-progress-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  toast('Backup saved to your downloads');
+}
+
+async function restoreProgress(file, after) {
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch {
+    return toast('That file is not a ferrule backup', 'bad');
+  }
+  const n = Array.isArray(data.attempts) ? data.attempts.length : 0;
+  const when = data.saved_at ? new Date(data.saved_at).toLocaleString() : 'an unknown date';
+  // Restoring replaces, it does not merge: say so before anything changes.
+  if (!confirm(`Replace the progress in this browser with this backup?\n\n` +
+    `The backup has ${n.toLocaleString()} answers, saved ${when}. ` +
+    `Anything answered here since then will be replaced.`)) return;
+  try {
+    const res = await post('/api/progress/import', { data });
+    toast(`Restored ${res.attempts.toLocaleString()} answers`);
+  } catch (e) {
+    toast(e.message, 'bad');
+  }
+  after();
+}
+
+function wireBackup(after) {
+  $$('[data-backup]').forEach((b) => (b.onclick = () =>
+    busy(b, 'Preparing…', async () => { await backupProgress(); after(); })));
+  $$('[data-goto]').forEach((b) => (b.onclick = () => show(b.dataset.goto)));
+  $$('[data-releases]').forEach((b) => (b.onclick = () =>
+    window.open(RELEASES_URL, '_blank', 'noopener')));
+  const input = $('#restorefile');
+  const restore = $('#restore');
+  if (input && restore) {
+    restore.onclick = () => input.click();
+    input.onchange = () => {
+      const f = input.files[0];
+      input.value = '';
+      if (f) restoreProgress(f, after);
+    };
+  }
+  const persist = $('#persist');
+  if (persist) persist.onclick = () => busy(persist, '', async () => {
+    const res = await post('/api/storage/persist', {});
+    toast(res.persisted
+      ? 'Storage protected'
+      : 'The browser declined. It usually agrees once you have used the site for a while, or bookmarked it.');
+    after();
+  });
+}
+
 // ---------------------------------------------------------------- settings
 
 VIEWS.settings = async function renderSettings() {
   if (!$('.models')) main.innerHTML = skeleton(6);
-  const [rt, tc, src] = await Promise.all([
+  const [rt, tc, src, st] = await Promise.all([
     api('/api/runtime/status'), api('/api/tutor/config'), api('/api/sources'),
+    WEB ? api('/api/storage') : null,
   ]);
 
   const installed = new Set(rt.installed_models);
@@ -1789,6 +2006,7 @@ VIEWS.settings = async function renderSettings() {
   main.innerHTML = `
     <h1 class="serif">Settings</h1>
 
+    ${WEB ? webSettings(st) : `
     <h3>AI tutor</h3>
     <div class="card">
       <p class="sub" style="margin:0 0 6px">
@@ -1868,6 +2086,7 @@ VIEWS.settings = async function renderSettings() {
         Keys live in <code>~/.config/ferrule/config.json</code>, owner-only, never in the database or the repo.
       </p>
     </div>
+    `}
 
     <h3>Question vintage</h3>
     <div class="card">
@@ -1942,20 +2161,23 @@ VIEWS.settings = async function renderSettings() {
     VIEWS.settings();
   }));
 
-  $('#save-tutor').onclick = async () => {
-    await post('/api/tutor/config', {
-      enabled: true, provider: $('#prov').value, model: $('#model').value.trim(),
-      base_url: $('#baseurl').value.trim(), api_key: $('#apikey').value.trim(),
-    });
-    $('#tutor-result').textContent = 'Saved.';
-    toast('Tutor settings saved');
-  };
-  $('#test-tutor').onclick = async () => {
-    $('#tutor-result').textContent = 'Testing…';
-    const h = await api('/api/tutor/health');
-    $('#tutor-result').textContent = h.ok
-      ? `Connected · ${h.models.length} model(s).` : `Failed: ${h.error}`;
-  };
+  if (WEB) wireBackup(VIEWS.settings);
+  else {
+    $('#save-tutor').onclick = async () => {
+      await post('/api/tutor/config', {
+        enabled: true, provider: $('#prov').value, model: $('#model').value.trim(),
+        base_url: $('#baseurl').value.trim(), api_key: $('#apikey').value.trim(),
+      });
+      $('#tutor-result').textContent = 'Saved.';
+      toast('Tutor settings saved');
+    };
+    $('#test-tutor').onclick = async () => {
+      $('#tutor-result').textContent = 'Testing…';
+      const h = await api('/api/tutor/health');
+      $('#tutor-result').textContent = h.ok
+        ? `Connected · ${h.models.length} model(s).` : `Failed: ${h.error}`;
+    };
+  }
   $$('[data-src]').forEach((cb) => (cb.onchange = async () => {
     const enabled = $$('[data-src]').filter((x) => x.checked).map((x) => x.dataset.src);
     const res = await fetch('/api/sources', {

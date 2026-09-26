@@ -22,3 +22,6 @@ build/
 release/
 dist/
 *.spec
+
+# Web build output (scripts/build-web.sh)
+site/
